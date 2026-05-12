@@ -100,7 +100,12 @@ function requireAuth(req, res, next) {
 //  ROUTES
 // ══════════════════════════════════════════════════════════════════
 
-// ── Health / validate ────────────────────────────────────────────
+// ── Public health check (no auth — used by Docker/Coolify) ───────
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// ── Validate API key ─────────────────────────────────────────────
 app.get('/api/validate', requireAuth, (_req, res) => {
   res.json({ ok: true });
 });
