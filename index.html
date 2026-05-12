@@ -82,6 +82,11 @@
 <div id="root"></div>
 
 <script>
+// ── Self-hosted mode (injected by server.js at runtime) ─────────
+// When served from the Express server, window.WEBARS_SELF_HOSTED is set
+// to true BEFORE this script runs. On GitHub Pages it stays undefined.
+const SELF_HOSTED = !!(typeof window !== 'undefined' && window.WEBARS_SELF_HOSTED);
+
 // ═══════════════════════════════════════════════════════════════
 //  CRYPTO + TOTP  (plain JS, no framework)
 // ═══════════════════════════════════════════════════════════════
@@ -183,6 +188,133 @@ async function checkEmailHash(email) {
 }
 function hasEmailHash() { return !!localStorage.getItem(EMAIL_HASH_KEY); }
 
+// ─── CLOUD RECOVERY ─────────────────────────────────────────────
+// Encrypted master-key blob stored in public repo at recovery/<emailhash>.json
+// Allows login on any device with email+password, no invite needed.
+const RECOVERY_REPO = 'Tatstast/crm-system';
+const LOGIN_ATTEMPTS_KEY = 'webars_login_attempts_v1';
+
+async function emailHash16(email){
+  const buf = new TextEncoder().encode(email.trim().toLowerCase());
+  const h = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(h)].slice(0,8).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function deriveStrongKey(secret, email, salt){
+  const enc = new TextEncoder();
+  const raw = await crypto.subtle.importKey('raw', enc.encode(secret+':'+email.trim().toLowerCase()), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations:600000, hash:'SHA-256'},
+    raw, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
+  );
+}
+
+function generateRecoveryCode(){
+  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0,1,O,I (lookalikes)
+  return [...bytes].map(b=>alphabet[b%32]).join('').match(/.{1,4}/g).join('-');
+}
+
+async function buildRecoveryBlob(email, password, recoveryCode, masterKey, ghSettings){
+  const masterB64 = await exportMasterKeyB64(masterKey);
+  const payload = {masterKeyB64: masterB64, ghSettings: ghSettings || null};
+
+  const pwSalt = crypto.getRandomValues(new Uint8Array(32));
+  const pwKey = await deriveStrongKey(password, email, pwSalt);
+  const pwEnc = await aesEncrypt(pwKey, payload);
+
+  const codeSalt = crypto.getRandomValues(new Uint8Array(32));
+  const codeKey = await deriveStrongKey(recoveryCode, email, codeSalt);
+  const codeEnc = await aesEncrypt(codeKey, payload);
+
+  return {v:1, pwSalt:toB64(pwSalt), pwEnc, codeSalt:toB64(codeSalt), codeEnc, updatedAt:new Date().toISOString()};
+}
+
+async function decryptRecoveryWithPassword(blob, email, password){
+  const salt = fromB64(blob.pwSalt);
+  const key = await deriveStrongKey(password, email, salt);
+  return aesDecrypt(key, blob.pwEnc);
+}
+
+async function decryptRecoveryWithCode(blob, email, code){
+  if(!blob.codeSalt||!blob.codeEnc) throw new Error('Kein Recovery-Code für dieses Konto hinterlegt.');
+  const salt = fromB64(blob.codeSalt);
+  const key = await deriveStrongKey(code.replace(/-/g,'').toUpperCase(), email, salt);
+  return aesDecrypt(key, blob.codeEnc);
+}
+
+async function pushRecoveryBlob(email, blob, ghToken, ghRepo){
+  if (SELF_HOSTED) {
+    const hash = await emailHash16(email);
+    const r = await fetch(`/api/recovery/${hash}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(blob)
+    });
+    if (!r.ok) throw new Error('Recovery push failed: ' + r.status);
+    return;
+  }
+  const filename = await emailHash16(email);
+  const path = `recovery/${filename}.json`;
+  let sha = null;
+  try{
+    const r = await fetch(`https://api.github.com/repos/${ghRepo}/contents/${path}`, {headers:{Authorization:`Bearer ${ghToken}`,Accept:'application/vnd.github+json'}});
+    if(r.ok) sha = (await r.json()).sha;
+  }catch(e){}
+  const body = {message:'Update recovery blob', content: btoa(unescape(encodeURIComponent(JSON.stringify(blob, null, 2))))};
+  if(sha) body.sha = sha;
+  const r = await fetch(`https://api.github.com/repos/${ghRepo}/contents/${path}`, {
+    method:'PUT',
+    headers:{Authorization:`Bearer ${ghToken}`,'Content-Type':'application/json',Accept:'application/vnd.github+json'},
+    body: JSON.stringify(body)
+  });
+  if(!r.ok){const t=await r.text();throw new Error('Recovery push failed: '+r.status+' '+t.slice(0,100));}
+}
+
+async function fetchRecoveryBlob(email, ghRepo){
+  if (SELF_HOSTED) {
+    const hash = await emailHash16(email);
+    try {
+      const r = await fetch(`/api/recovery/${hash}`, {cache: 'no-store'});
+      if (!r.ok) return null;
+      return await r.json();
+    } catch(e) { return null; }
+  }
+  const repo = ghRepo || RECOVERY_REPO;
+  const filename = await emailHash16(email);
+  const url = `https://raw.githubusercontent.com/${repo}/main/recovery/${filename}.json?t=${Date.now()}`;
+  try{
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+
+// ─── LOGIN LOCKOUT ──────────────────────────────────────────────
+function getLoginLockout(){
+  try{
+    const a = JSON.parse(localStorage.getItem(LOGIN_ATTEMPTS_KEY)||'{}');
+    if(a.until && a.until > Date.now()) return Math.ceil((a.until-Date.now())/1000);
+    return 0;
+  }catch(e){return 0;}
+}
+
+function recordLoginFailure(){
+  let a = {count:0};
+  try{ a = JSON.parse(localStorage.getItem(LOGIN_ATTEMPTS_KEY)||'{}'); }catch(e){}
+  a.count = (a.count||0)+1;
+  if(a.count >= 3){
+    const tier = Math.floor((a.count-3)/3);
+    const lockMin = [5, 60, 60*24][Math.min(tier,2)] || 60*24;
+    a.until = Date.now() + lockMin*60*1000;
+    a.lockMin = lockMin;
+  }
+  localStorage.setItem(LOGIN_ATTEMPTS_KEY, JSON.stringify(a));
+  return {count:a.count, lockSeconds: a.until?Math.ceil((a.until-Date.now())/1000):0, lockMin:a.lockMin||0};
+}
+
+function clearLoginAttempts(){ localStorage.removeItem(LOGIN_ATTEMPTS_KEY); }
+
 // ─── Master Key (shared team encryption key, wrapped per-user) ──
 const MASTER_KEY_STORE = 'webars_master_v1';
 
@@ -198,17 +330,39 @@ async function importMasterKeyFromB64(b64) {
 }
 
 async function setupPassword(password, providedMasterKeyB64 = null) {
+  // Reset salt to ensure fresh setup on new device
+  localStorage.removeItem(SALT_KEY);
   const salt = getSalt();
   const wrapKey = await deriveKey(password, salt);
   // Verify string encrypted with wrapping key
   localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
-  // Master key: imported (member) or freshly generated (owner)
+  // Master key: imported (member/cloud-recovery) or freshly generated (owner)
   const masterKey = providedMasterKeyB64
     ? await importMasterKeyFromB64(providedMasterKeyB64)
     : await generateMasterKey();
   const masterB64 = await exportMasterKeyB64(masterKey);
   localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(await aesEncrypt(wrapKey, masterB64)));
   return masterKey; // master key is the actual encryption key for all data
+}
+
+// Re-encrypt master key with NEW password (for password reset via recovery code)
+async function rewrapMasterKey(masterKey, newPassword){
+  localStorage.removeItem(SALT_KEY);
+  const salt = getSalt();
+  const wrapKey = await deriveKey(newPassword, salt);
+  localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+  const masterB64 = await exportMasterKeyB64(masterKey);
+  localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(await aesEncrypt(wrapKey, masterB64)));
+}
+
+// Save recovery blob to cloud (called whenever password OR ghSettings change)
+async function saveCloudRecovery(email, password, recoveryCode, masterKey, ghSettings){
+  if(!email||!password||!recoveryCode||!masterKey||!ghSettings||!ghSettings.token||!ghSettings.repo)return false;
+  try{
+    const blob = await buildRecoveryBlob(email, password, recoveryCode, masterKey, ghSettings);
+    await pushRecoveryBlob(email, blob, ghSettings.token, ghSettings.repo);
+    return true;
+  }catch(e){console.warn('Cloud recovery save failed:', e);return false;}
 }
 
 async function verifyPassword(password) {
@@ -411,6 +565,16 @@ function buildCrmSummary(state) {
   };
 }
 async function pushCrmSummary(state, ghSettings) {
+  if (SELF_HOSTED) {
+    try {
+      await fetch('/api/summary', {
+        method: 'PUT',
+        headers: {Authorization: `Bearer ${ghSettings.token}`, 'Content-Type': 'application/json'},
+        body: JSON.stringify(buildCrmSummary(state))
+      });
+    } catch(e) {}
+    return;
+  }
   try {
     const content = JSON.stringify(buildCrmSummary(state), null, 2);
     const headers = {Authorization:`Bearer ${ghSettings.token}`,'Content-Type':'application/json'};
@@ -441,6 +605,14 @@ async function pushCrmSummary(state, ghSettings) {
 }
 
 async function ghValidateAccess(token, repo) {
+  if (SELF_HOSTED) {
+    const r = await fetch('/api/validate', {
+      headers: {Authorization: `Bearer ${token}`}
+    });
+    if (r.status === 401) throw new Error('API Key ungültig — stimmt der eingegebene Schlüssel?');
+    if (!r.ok) throw new Error(`Server-Fehler ${r.status}`);
+    return true;
+  }
   const r = await fetch(`https://api.github.com/repos/${repo}`, {
     headers: {Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json'}
   });
@@ -453,6 +625,20 @@ async function ghValidateAccess(token, repo) {
 }
 
 async function ghFetchFile(token, repo, path) {
+  if (SELF_HOSTED) {
+    const r = await fetch('/api/data', {
+      headers: {Authorization: `Bearer ${token}`}
+    });
+    if (r.status === 401) {
+      _ghSyncState = {state:'token_invalid', at:Date.now()};
+      _notifySync && _notifySync();
+      throw new Error('TOKEN_INVALID');
+    }
+    if (!r.ok) return {content: null, sha: null};
+    const j = await r.json();
+    if (!j.content) return {content: null, sha: null};
+    return {content: j.content, sha: String(j.version)};
+  }
   const r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}?ref=main`, {
     headers: {Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json'}
   });
@@ -470,6 +656,25 @@ async function ghFetchFile(token, repo, path) {
 }
 
 async function ghPushFile(token, repo, path, content, sha = null, message = 'Update CRM') {
+  if (SELF_HOSTED) {
+    const r = await fetch('/api/data', {
+      method: 'PUT',
+      headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'},
+      body: JSON.stringify({content, version: sha ? Number(sha) : null})
+    });
+    if (r.status === 409) throw new Error('CONFLICT');
+    if (r.status === 401) {
+      _ghSyncState = {state:'token_invalid', at:Date.now()};
+      _notifySync && _notifySync();
+      throw new Error('TOKEN_INVALID');
+    }
+    if (!r.ok) {
+      const e = await r.json().catch(()=>({}));
+      throw new Error(`Sync fehlgeschlagen: ${e.error || r.status}`);
+    }
+    const j = await r.json();
+    return String(j.version);
+  }
   const body = {
     message: `${message} · ${new Date().toISOString().slice(0,16).replace('T',' ')}`,
     content: b64encode(JSON.stringify(content)),
@@ -508,6 +713,31 @@ async function ghPushFile(token, repo, path, content, sha = null, message = 'Upd
 // Poll for updates from other team members
 async function ghCheckForUpdates(key) {
   if (!_ghSettings) return null;
+  if (SELF_HOSTED) {
+    try {
+      const r = await fetch('/api/data', {
+        headers: {Authorization: `Bearer ${_ghSettings.token}`}
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!j.content) return null;
+      const newVer = String(j.version);
+      if (newVer === _ghSha) return null; // nothing changed
+      const content = j.content;
+      const decrypted = await aesDecrypt(key, content);
+      const cloudTs = decrypted._savedAt || 0;
+      const localRaw = localStorage.getItem(DATA_KEY);
+      let localTs = 0;
+      if (localRaw) { try { const ld = await aesDecrypt(key, JSON.parse(localRaw)); localTs = ld?._savedAt||0; } catch(e){} }
+      if (cloudTs > 0 && cloudTs <= localTs) {
+        _ghSha = newVer; localStorage.setItem(GH_SHA_KEY, newVer); return null;
+      }
+      if (localRaw) localStorage.setItem(DATA_BACKUP_KEY, localRaw);
+      _ghSha = newVer; localStorage.setItem(GH_SHA_KEY, newVer);
+      localStorage.setItem(DATA_KEY, JSON.stringify(content));
+      return decrypted;
+    } catch(e) { return null; }
+  }
   try {
     const r = await fetch(`https://api.github.com/repos/${_ghSettings.repo}/contents/${_ghSettings.path}?ref=main`, {
       headers: {Authorization: `Bearer ${_ghSettings.token}`, Accept: 'application/vnd.github+json'}
@@ -1319,7 +1549,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setErr(''); setInfo(''); setBusy(true);
     try {
       await ghValidateAccess(token.trim(), repo.trim());
-      setInfo('✓ Verbindung OK — Token und Repo gültig.');
+      setInfo(SELF_HOSTED ? '✓ API Key gültig — Server erreichbar.' : '✓ Verbindung OK — Token und Repo gültig.');
     } catch(e) { setErr(e.message); }
     setBusy(false);
   };
@@ -1328,27 +1558,25 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setErr(''); setInfo(''); setBusy(true);
     try {
       await ghValidateAccess(token.trim(), repo.trim());
-      const settings = {token: token.trim(), repo: repo.trim(), path: path.trim()};
+      const settings = SELF_HOSTED
+        ? {token: token.trim(), selfhosted: true}
+        : {token: token.trim(), repo: repo.trim(), path: path.trim()};
       // Check if remote file exists with data
-      const fetched = await ghFetchFile(settings.token, settings.repo, settings.path);
+      const fetched = await ghFetchFile(settings.token, settings.repo || '', settings.path || '');
       if (fetched.content) {
-        // Try to decrypt with current key — if works, we use it
         try {
           const decrypted = await aesDecrypt(cryptoKey, fetched.content);
           await saveGithubSettings(cryptoKey, settings);
-          // store the sha so subsequent saves work
           _ghSha = fetched.sha;
-          setInfo('✓ Verbunden — vorhandene Team-Daten geladen.');
+          setInfo('✓ Verbunden — vorhandene Daten geladen.');
           onSaved && onSaved(decrypted);
           return;
         } catch(e) {
-          setErr('Datei existiert auf GitHub, kann aber mit deinem Passwort nicht entschlüsselt werden. Stimmt das Team-Passwort?');
+          setErr('Daten auf dem Server können mit deinem Passwort nicht entschlüsselt werden. Stimmt das Passwort?');
           setBusy(false); return;
         }
       } else {
-        // No file yet — push current local data as initial state
         await saveGithubSettings(cryptoKey, settings);
-        // We need to push current state. Caller handles this via onSaved(null).
         onSaved && onSaved(null);
         return;
       }
@@ -1372,14 +1600,13 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setBackupErr(''); setBackupInfo(''); setBackupBusy(true);
     try {
       const s = currentSettings;
-      if (!s) throw new Error('Erst Cloud-Sync verbinden.');
-      const fetched = await ghFetchFile(s.token, s.repo, s.path);
+      if (!s) throw new Error('Erst Verbindung herstellen.');
+      const fetched = await ghFetchFile(s.token, s.repo || '', s.path || '');
       if (!fetched.content) throw new Error('Noch keine Daten in der Cloud.');
       const payload = {
         version: 1,
         savedAt: new Date().toISOString(),
-        repo: s.repo,
-        path: s.path,
+        selfhosted: SELF_HOSTED,
         encryptedData: fetched.content,
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
@@ -1398,8 +1625,20 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setBackupErr(''); setBackupBusy(true);
     try {
       const s = currentSettings;
-      if (!s) throw new Error('Erst Cloud-Sync verbinden.');
-      // List files in data/backups/
+      if (!s) throw new Error('Erst Verbindung herstellen.');
+      if (SELF_HOSTED) {
+        const r = await fetch('/api/backups', {headers:{Authorization:`Bearer ${s.token}`}});
+        if (!r.ok) throw new Error(`Konnte Backups nicht laden (${r.status})`);
+        const j = await r.json();
+        if (!j.backups || j.backups.length === 0) {
+          setBackups([]);
+          setBackupErr('Noch keine automatischen Backups — werden täglich um 02:00 UTC erstellt.');
+        } else {
+          setBackups(j.backups.map(b => ({...b, sha: String(b.id)})));
+        }
+        setBackupBusy(false); return;
+      }
+      // GitHub mode
       const dir = (s.path || 'data/crm-data.json').split('/').slice(0,-1).join('/') + '/backups';
       const r = await fetch(`https://api.github.com/repos/${s.repo}/contents/${dir}`, {
         headers:{Authorization:`Bearer ${s.token}`, Accept:'application/vnd.github+json'}
@@ -1414,25 +1653,32 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
   };
 
   const restoreFromBackup = async (backup) => {
-    if (!window.confirm(`Wirklich auf Backup vom ${backup.name.replace(/.*\.(\d{4}-\d{2}-\d{2})\.json$/,'$1')} zurücksetzen?\n\nDie aktuelle Cloud-Datei wird durch das Backup überschrieben. (Das Backup selbst bleibt erhalten.)`)) return;
+    const label = backup.name ? backup.name.replace(/.*(\d{4}-\d{2}-\d{2}).*/,'$1') : String(backup.id);
+    if (!window.confirm(`Wirklich auf Backup vom ${label} zurücksetzen?\n\nDie aktuelle Datei wird überschrieben. (Backup bleibt erhalten.)`)) return;
     setBackupErr(''); setBackupInfo(''); setBackupBusy(true);
     try {
       const s = currentSettings;
-      // Fetch backup content
-      const r = await fetch(`https://api.github.com/repos/${s.repo}/contents/${backup.path}`, {
-        headers:{Authorization:`Bearer ${s.token}`, Accept:'application/vnd.github+json'}
-      });
-      if (!r.ok) throw new Error(`Backup konnte nicht gelesen werden (${r.status})`);
-      const j = await r.json();
-      const content = JSON.parse(b64decode(j.content));
-      // Sanity-check: ensure we can decrypt (= same master key)
+      let content;
+      if (SELF_HOSTED) {
+        const r = await fetch(`/api/backups/${backup.id}`, {headers:{Authorization:`Bearer ${s.token}`}});
+        if (!r.ok) throw new Error(`Backup konnte nicht gelesen werden (${r.status})`);
+        const j = await r.json();
+        content = j.content;
+      } else {
+        const r = await fetch(`https://api.github.com/repos/${s.repo}/contents/${backup.path}`, {
+          headers:{Authorization:`Bearer ${s.token}`, Accept:'application/vnd.github+json'}
+        });
+        if (!r.ok) throw new Error(`Backup konnte nicht gelesen werden (${r.status})`);
+        const j = await r.json();
+        content = JSON.parse(b64decode(j.content));
+      }
+      // Sanity-check: must be decryptable with current key
       try { await aesDecrypt(cryptoKey, content); }
-      catch(e) { throw new Error('Backup kann mit deinem Passwort nicht entschlüsselt werden — vermutlich von einem anderen Team.'); }
-      // Push as new current state
-      const fetched = await ghFetchFile(s.token, s.repo, s.path);
-      const newSha = await ghPushFile(s.token, s.repo, s.path, content, fetched.sha, `Restore from backup ${backup.name}`);
+      catch(e) { throw new Error('Backup kann mit deinem Passwort nicht entschlüsselt werden.'); }
+      const fetched = await ghFetchFile(s.token, s.repo||'', s.path||'');
+      const newSha = await ghPushFile(s.token, s.repo||'', s.path||'', content, fetched.sha, `Restore from backup ${backup.name||backup.id}`);
       _ghSha = newSha;
-      setBackupInfo('✓ Wiederhergestellt — bitte Seite neu laden, um die Daten zu sehen.');
+      setBackupInfo('✓ Wiederhergestellt — bitte Seite neu laden.');
     } catch(e) { setBackupErr(e.message); }
     setBackupBusy(false);
   };
@@ -1442,33 +1688,41 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
       <div className="modal-box" onClick={e=>e.stopPropagation()} style={{width:520}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}>
           <div>
-            <h2 style={{fontSize:17,fontWeight:700}}>☁ Cloud-Sync (GitHub)</h2>
+            <h2 style={{fontSize:17,fontWeight:700}}>{SELF_HOSTED ? '🖥 Server-Sync' : '☁ Cloud-Sync (GitHub)'}</h2>
             <p style={{fontSize:12.5,color:'#A8A39D',marginTop:3,lineHeight:1.5}}>
-              Daten verschlüsselt in einem GitHub-Repo speichern, damit Team-Mitglieder Zugriff haben.
+              {SELF_HOSTED
+                ? 'Daten verschlüsselt auf dem eigenen Server (Coolify) speichern — kein GitHub benötigt.'
+                : 'Daten verschlüsselt in einem GitHub-Repo speichern, damit Team-Mitglieder Zugriff haben.'}
             </p>
           </div>
           <button onClick={onClose} style={{background:'#F5F3F0',border:'none',borderRadius:8,padding:8,color:'#999',lineHeight:0}}><Icons.Close/></button>
         </div>
 
-        <div style={{background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:10,padding:'10px 14px',marginBottom:18,fontSize:12.5,color:'#9A3412',lineHeight:1.55}}>
-          <strong>Wichtig:</strong> Alle Team-Mitglieder brauchen <strong>denselben Token, dasselbe Repo</strong> und das <strong>gleiche Passwort</strong> wie du, um die Daten zu entschlüsseln. Teile diese drei Dinge sicher (z.B. via Passwort-Manager).
-        </div>
-
-        <div style={{marginBottom:14}}>
-          <div style={{fontSize:11,fontWeight:600,color:'#6B6560',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>GitHub Personal Access Token</div>
-          <input value={token} onChange={e=>setToken(e.target.value)} type="password" placeholder="github_pat_…" style={{fontFamily:'monospace',fontSize:12.5}}/>
-          <div style={{fontSize:11.5,color:'#A8A39D',marginTop:4,lineHeight:1.5}}>
-            Erstellen unter <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style={{color:'#3F3A35',fontWeight:600}}>github.com/settings/personal-access-tokens</a> · Berechtigungen: <em>Contents: Read and write</em>
+        {SELF_HOSTED ? (
+          <div style={{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:10,padding:'10px 14px',marginBottom:18,fontSize:12.5,color:'#1e40af',lineHeight:1.55}}>
+            <strong>Self-Hosted Modus:</strong> Das CRM läuft auf deinem eigenen Server. Trage den <strong>API_SECRET</strong> aus deiner Coolify-Konfiguration ein — kein GitHub-Token nötig.
           </div>
+        ) : (
+          <div style={{background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:10,padding:'10px 14px',marginBottom:18,fontSize:12.5,color:'#9A3412',lineHeight:1.55}}>
+            <strong>Wichtig:</strong> Alle Team-Mitglieder brauchen <strong>denselben Token, dasselbe Repo</strong> und das <strong>gleiche Passwort</strong> wie du, um die Daten zu entschlüsseln. Teile diese drei Dinge sicher (z.B. via Passwort-Manager).
+          </div>
+        )}
+
+        <div style={{marginBottom:SELF_HOSTED?18:14}}>
+          <div style={{fontSize:11,fontWeight:600,color:'#6B6560',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>{SELF_HOSTED ? 'API Secret (aus Coolify-Einstellungen)' : 'GitHub Personal Access Token'}</div>
+          <input value={token} onChange={e=>setToken(e.target.value)} type="password" placeholder={SELF_HOSTED ? 'API_SECRET…' : 'github_pat_…'} style={{fontFamily:'monospace',fontSize:12.5}}/>
+          {!SELF_HOSTED && <div style={{fontSize:11.5,color:'#A8A39D',marginTop:4,lineHeight:1.5}}>
+            Erstellen unter <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style={{color:'#3F3A35',fontWeight:600}}>github.com/settings/personal-access-tokens</a> · Berechtigungen: <em>Contents: Read and write</em>
+          </div>}
         </div>
-        <div style={{marginBottom:14}}>
+        {!SELF_HOSTED && <div style={{marginBottom:14}}>
           <div style={{fontSize:11,fontWeight:600,color:'#6B6560',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>Repository (user/repo)</div>
           <input value={repo} onChange={e=>setRepo(e.target.value)} placeholder="Tatstast/crm-system" style={{fontFamily:'monospace'}}/>
-        </div>
-        <div style={{marginBottom:18}}>
+        </div>}
+        {!SELF_HOSTED && <div style={{marginBottom:18}}>
           <div style={{fontSize:11,fontWeight:600,color:'#6B6560',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>Datei-Pfad im Repo</div>
           <input value={path} onChange={e=>setPath(e.target.value)} placeholder="data/crm-data.json" style={{fontFamily:'monospace'}}/>
-        </div>
+        </div>}
 
         {info && <div style={{fontSize:12.5,color:'#16a34a',padding:'8px 12px',background:'#F0FDF4',borderRadius:8,marginBottom:12,border:'1px solid #BBF7D0'}}>{info}</div>}
         {err && <div style={{fontSize:12.5,color:'#C0392B',padding:'8px 12px',background:'#FEF2F2',borderRadius:8,marginBottom:12,border:'1px solid #FECACA'}}>{err}</div>}
@@ -1478,8 +1732,8 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             <button className="btn btn-danger btn-sm" onClick={disconnect} disabled={busy}>Sync trennen</button>
           ) : <div></div>}
           <div style={{display:'flex',gap:8}}>
-            <button className="btn btn-ghost" onClick={test} disabled={busy||!token||!repo}>Verbindung testen</button>
-            <button className="btn btn-primary" onClick={save} disabled={busy||!token||!repo||!path}>
+            <button className="btn btn-ghost" onClick={test} disabled={busy||!token||(SELF_HOSTED?false:!repo)}>Verbindung testen</button>
+            <button className="btn btn-primary" onClick={save} disabled={busy||!token||(SELF_HOSTED?false:!repo||!path)}>
               {busy?'…':isUpdate?'Speichern':'Verbinden'}
             </button>
           </div>
@@ -1495,7 +1749,16 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         {isUpdate && (
           <div style={{marginTop:18,paddingTop:18,borderTop:'1px solid #F0EDE8'}}>
             <div style={{fontSize:13,fontWeight:700,color:'#141210',marginBottom:6}}>🤖 Jarvis API</div>
-            {(()=>{
+            {SELF_HOSTED ? (
+              <div style={{fontSize:12,color:'#3F3A35',lineHeight:1.6}}>
+                <div style={{marginBottom:4}}>Im Self-Hosted Modus liest Jarvis die CRM-Zusammenfassung direkt vom Server.</div>
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <code style={{background:'#FAFAF8',padding:'4px 8px',borderRadius:6,fontSize:11,border:'1px solid #E8E4DF',flex:1,wordBreak:'break-all'}}>{window.location.origin}/api/summary</code>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>navigator.clipboard?.writeText(window.location.origin+'/api/summary')} style={{flexShrink:0,fontSize:11}}>Kopieren</button>
+                </div>
+                <div style={{fontSize:11,color:'#A8A39D',marginTop:4}}>→ In <code>jarvis_crm_tools.js</code>: <code>SELF_HOSTED_URL</code> auf diese Basis-URL setzen</div>
+              </div>
+            ) : (()=>{
               const gid = getJarvisGistId();
               return gid ? (
                 <div style={{fontSize:12,color:'#3F3A35',lineHeight:1.6}}>
@@ -1519,7 +1782,9 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
               <div>
                 <div style={{fontSize:13,fontWeight:700,color:'#141210'}}>🛡 Backups</div>
                 <div style={{fontSize:11.5,color:'#A8A39D',marginTop:2,lineHeight:1.5}}>
-                  Tägliche Snapshots werden automatisch in <code style={{background:'#FAFAF8',padding:'1px 5px',borderRadius:4,fontSize:11}}>data/backups/</code> erstellt. Letzte 30 Tage werden behalten.
+                  {SELF_HOSTED
+                    ? 'Täglich um 02:00 UTC automatisch erstellt (PostgreSQL). Letzte 30 Snapshots werden behalten.'
+                    : <>Tägliche Snapshots werden automatisch in <code style={{background:'#FAFAF8',padding:'1px 5px',borderRadius:4,fontSize:11}}>data/backups/</code> erstellt. Letzte 30 Tage werden behalten.</>}
                 </div>
               </div>
             </div>
@@ -1532,10 +1797,10 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             {backups.length > 0 && (
               <div style={{maxHeight:200,overflowY:'auto',border:'1px solid #F0EDE8',borderRadius:8}}>
                 {backups.map(b=>{
-                  const dateMatch = b.name.match(/(\d{4}-\d{2}-\d{2})\.json$/);
-                  const date = dateMatch ? dateMatch[1] : b.name;
+                  const dateMatch = (b.name||'').match(/(\d{4}-\d{2}-\d{2})/);
+                  const date = dateMatch ? dateMatch[1] : (b.created_at ? b.created_at.slice(0,10) : b.name||String(b.id));
                   return(
-                    <div key={b.sha} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',borderBottom:'1px solid #F5F3F0',fontSize:12.5}}>
+                    <div key={b.sha||b.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',borderBottom:'1px solid #F5F3F0',fontSize:12.5}}>
                       <div>
                         <div style={{fontWeight:600,color:'#141210'}}>{date}</div>
                         <div style={{fontSize:10.5,color:'#A8A39D',fontFamily:'monospace',marginTop:1}}>{b.name}</div>
@@ -4964,7 +5229,9 @@ function PublicFormPage({slug}){
     (async()=>{
       try{
         const dir=window.location.pathname+(window.location.pathname.endsWith('/')?'':'/');
-        const url=`${window.location.origin}${dir}forms/${slug}.json?t=${Date.now()}`;
+        const url=SELF_HOSTED
+          ? `/forms/${encodeURIComponent(slug)}?t=${Date.now()}`
+          : `${window.location.origin}${dir}forms/${slug}.json?t=${Date.now()}`;
         const r=await fetch(url,{cache:'no-store'});
         if(!r.ok){setLoadErr('Dieses Formular wurde nicht gefunden oder ist nicht mehr verfügbar.');return;}
         const def=await r.json();
@@ -5104,11 +5371,15 @@ function PublicFormPage({slug}){
 
 // ── FORMS ────────────────────────────────────────────────────────
 async function publishFormToGithub(form, ghSettings){
-  if(!ghSettings)throw new Error('Cloud-Sync muss verbunden sein, um Formulare zu veröffentlichen.');
-  const path=`forms/${form.slug}.json`;
+  if(!ghSettings)throw new Error('Server/Cloud-Sync muss verbunden sein, um Formulare zu veröffentlichen.');
   const publicForm={slug:form.slug,title:form.title,intro:form.intro||'',thanks:form.thanks||'',submitEmail:form.submitEmail||'',fields:form.fields||[]};
+  if (SELF_HOSTED) {
+    const r=await fetch(`/api/forms/${form.slug}`,{method:'PUT',headers:{Authorization:`Bearer ${ghSettings.token}`,'Content-Type':'application/json'},body:JSON.stringify(publicForm)});
+    if(!r.ok){const t=await r.text();throw new Error(`Server Fehler ${r.status}: ${t.slice(0,120)}`);}
+    return;
+  }
+  const path=`forms/${form.slug}.json`;
   const content=JSON.stringify(publicForm,null,2);
-  // Get current SHA if exists
   let sha=null;
   try{
     const r=await fetch(`https://api.github.com/repos/${ghSettings.repo}/contents/${path}`,{headers:{Authorization:`Bearer ${ghSettings.token}`,Accept:'application/vnd.github+json'}});
@@ -5122,6 +5393,10 @@ async function publishFormToGithub(form, ghSettings){
 
 async function unpublishFormFromGithub(form, ghSettings){
   if(!ghSettings)return;
+  if (SELF_HOSTED) {
+    try{await fetch(`/api/forms/${form.slug}`,{method:'DELETE',headers:{Authorization:`Bearer ${ghSettings.token||''}`}});}catch(e){}
+    return;
+  }
   const path=`forms/${form.slug}.json`;
   try{
     const r=await fetch(`https://api.github.com/repos/${ghSettings.repo}/contents/${path}`,{headers:{Authorization:`Bearer ${ghSettings.token}`,Accept:'application/vnd.github+json'}});
