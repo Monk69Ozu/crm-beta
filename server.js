@@ -87,7 +87,7 @@ async function initDb() {
     await conn.query(`
       CREATE TABLE IF NOT EXISTS recovery_blobs (
         email_hash VARCHAR(32)  NOT NULL,
-        blob       LONGTEXT     NOT NULL,
+        payload    LONGTEXT     NOT NULL,
         updated_at DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (email_hash)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -208,9 +208,9 @@ app.put('/api/data', requireAuth, async (req, res) => {
 // ── Recovery blobs (no auth — content is client-side encrypted) ──
 app.get('/api/recovery/:hash', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT blob FROM recovery_blobs WHERE email_hash = ?', [req.params.hash]);
+    const [rows] = await pool.query('SELECT payload FROM recovery_blobs WHERE email_hash = ?', [req.params.hash]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(fromRow(rows[0], 'blob'));
+    res.json(fromRow(rows[0], 'payload'));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -219,7 +219,7 @@ app.get('/api/recovery/:hash', async (req, res) => {
 app.put('/api/recovery/:hash', async (req, res) => {
   try {
     await pool.query(
-      'INSERT INTO recovery_blobs (email_hash, blob) VALUES (?, ?) ON DUPLICATE KEY UPDATE blob = VALUES(blob)',
+      'INSERT INTO recovery_blobs (email_hash, payload) VALUES (?, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload)',
       [req.params.hash, toJson(req.body)]
     );
     res.json({ ok: true });
