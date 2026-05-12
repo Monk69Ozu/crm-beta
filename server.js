@@ -150,11 +150,6 @@ function requireAuth(req, res, next) {
 //  ROUTES
 // ══════════════════════════════════════════════════════════════════
 
-// ── Public health check (no auth — used by Docker/Coolify) ───────
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, ts: Date.now() });
-});
-
 // ── Validate API key ─────────────────────────────────────────────
 app.get('/api/validate', requireAuth, (_req, res) => {
   res.json({ ok: true });
@@ -389,20 +384,42 @@ function scheduleDailyBackup() {
   console.log(`✓ Daily backup scheduled (next: ${next.toISOString()})`);
 }
 
-// ── Start ────────────────────────────────────────────────────────
-async function start() {
-  try {
-    await initDb();
-    scheduleDailyBackup();
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`\n🚀  WebArs CRM server running on port ${PORT}`);
-      console.log(`   Open: http://localhost:${PORT}`);
-      console.log(`   Health: http://localhost:${PORT}/health\n`);
-    });
-  } catch (e) {
-    console.error('Startup failed:', e.message);
-    process.exit(1);
+// ── Start: listen IMMEDIATELY, init DB in background with retries ──
+let DB_READY = false;
+let DB_ERROR = null;
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, dbReady: DB_READY, dbError: DB_ERROR, ts: Date.now() });
+});
+
+async function initDbWithRetry() {
+  let attempt = 0;
+  while (!DB_READY) {
+    attempt++;
+    try {
+      await initDb();
+      DB_READY = true;
+      DB_ERROR = null;
+      scheduleDailyBackup();
+      console.log('✓ Database connected (attempt ' + attempt + ')');
+      return;
+    } catch (e) {
+      DB_ERROR = e.message;
+      console.error(`⚠ DB init failed (attempt ${attempt}): ${e.message}`);
+      // Wait 3s then retry
+      await new Promise(r => setTimeout(r, 3000));
+      if (attempt >= 100) {
+        console.error('❌ Giving up after 100 attempts');
+        return;
+      }
+    }
   }
 }
 
-start();
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀  WebArs CRM server listening on port ${PORT}`);
+  console.log(`   Health: http://localhost:${PORT}/health`);
+  console.log(`   (DB connecting in background…)\n`);
+});
+
+initDbWithRetry();
