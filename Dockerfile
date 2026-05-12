@@ -25,7 +25,7 @@ USER crm
 EXPOSE 3000
 ENV NODE_ENV=production
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+# Healthcheck removed — Coolify can configure this in the UI if needed.
+# The /health endpoint is available at GET /health (no auth required).
 
 CMD ["node", "server.js"]
