@@ -28,7 +28,16 @@ Jarvis erstellt **keinen** finalen Datensatz im CRM — er erstellt einen **Link
 
 Das CRM schreibt bei jedem Speichern automatisch eine Zusammenfassung (`crm_summary.json`) in einen **privaten GitHub Gist**. Jarvis liest diesen Gist.
 
-### Konfiguration (`.env` oder `config.json`)
+### Konfiguration — Self-Hosted (Coolify) ✓ empfohlen
+
+```
+SELF_HOSTED_URL=https://crm.webars.at   # Basis-URL des Coolify-Servers
+CRM_URL=https://crm.webars.at           # Für Deep-Links (Entwürfe)
+```
+
+Die Summary-URL ist dann: `https://crm.webars.at/api/summary` — kein Token nötig, der Endpunkt ist öffentlich lesbar.
+
+### Konfiguration — GitHub Pages (alte Methode)
 
 ```
 GITHUB_TOKEN=ghp_...          # GitHub Personal Access Token (gists: read/write)
