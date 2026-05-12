@@ -1,0 +1,39 @@
+version: "3.9"
+
+# ══════════════════════════════════════════════════════════════════
+#  docker-compose.yml — for LOCAL TESTING only
+#  In Coolify: use the Dockerfile directly and attach the managed
+#  PostgreSQL service. Set the environment variables in Coolify UI.
+# ══════════════════════════════════════════════════════════════════
+
+services:
+  crm:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://crm:crm@db:5432/crm"
+      API_SECRET:   "${API_SECRET:-change-me-before-use}"
+      PORT:         "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       crm
+      POSTGRES_USER:     crm
+      POSTGRES_PASSWORD: crm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
