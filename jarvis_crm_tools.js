@@ -28,9 +28,15 @@
  *   }
  */
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GIST_ID      = process.env.JARVIS_GIST_ID || process.env.GIST_ID || null;
-const CRM_URL      = process.env.CRM_URL       || 'https://tatstast.github.io/crm-system';
+const GITHUB_TOKEN      = process.env.GITHUB_TOKEN;
+const GIST_ID           = process.env.JARVIS_GIST_ID || process.env.GIST_ID || null;
+const CRM_URL           = process.env.CRM_URL        || 'https://tatstast.github.io/crm-system';
+
+// Self-hosted mode: set SELF_HOSTED_URL to your Coolify server URL
+// e.g.  SELF_HOSTED_URL=https://crm.webars.at
+// When set, Jarvis reads the summary from GET <SELF_HOSTED_URL>/api/summary
+// and ignores GITHUB_TOKEN / GIST_ID entirely.
+const SELF_HOSTED_URL   = (process.env.SELF_HOSTED_URL || '').replace(/\/$/, '');
 
 // ── Tool-Definitionen für Claude API ─────────────────────────────
 
@@ -139,7 +145,15 @@ const CRM_TOOLS = [
 // ── Hilfsfunktionen ───────────────────────────────────────────────
 
 async function fetchCrmSummary() {
-  if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN nicht gesetzt.');
+  // ── Self-hosted mode ──────────────────────────────────────────
+  if (SELF_HOSTED_URL) {
+    const r = await fetch(`${SELF_HOSTED_URL}/api/summary`);
+    if (r.status === 404) throw new Error('Noch kein CRM-Summary auf dem Server — einmal im CRM speichern.');
+    if (!r.ok) throw new Error(`Server Fehler ${r.status}`);
+    return await r.json();
+  }
+  // ── GitHub Gist mode ──────────────────────────────────────────
+  if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN nicht gesetzt (oder SELF_HOSTED_URL für Self-Hosted-Modus).');
   if (!GIST_ID) throw new Error('JARVIS_GIST_ID nicht gesetzt — Gist-ID aus dem CRM (Cloud-Sync → Jarvis API) kopieren und als Umgebungsvariable setzen.');
   const r = await fetch(
     `https://api.github.com/gists/${GIST_ID}`,
@@ -160,7 +174,8 @@ function uid() {
 function generateDraftUrl(type, data) {
   const draft = { type, ...data };
   const encoded = Buffer.from(JSON.stringify(draft), 'utf8').toString('base64');
-  return `${CRM_URL}?draft=${encodeURIComponent(encoded)}`;
+  const base = SELF_HOSTED_URL || CRM_URL;
+  return `${base}?draft=${encodeURIComponent(encoded)}`;
 }
 
 // ── Tool Handler ──────────────────────────────────────────────────
