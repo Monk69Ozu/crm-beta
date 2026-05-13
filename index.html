@@ -2274,7 +2274,7 @@ function ContactDetail({contact,sections,quotes,settings,onClose,onUpdate,onEdit
 }
 
 function ContactCard({contact,sections,onEdit,onDelete,onDetail,onMove,animDelay}){
-  const initials=contact.firma.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+  const initials=(contact.firma||'?').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase()||'?';
   const aColor=avatarColor(contact.firma);
   const overdueRem=(contact.reminders||[]).filter(r=>r.date<new Date().toISOString().slice(0,10));
   const [hover,setHover]=useState(false);
@@ -6521,7 +6521,9 @@ function ResponseViewerModal({response, form, onClose}){
 function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const [state,setState]=useState(()=>({
     ...initialData,
+    sections: initialData.sections || DEFAULT_SECTIONS,
     subsections: initialData.subsections || DEFAULT_SUBSECTIONS,
+    customFields: initialData.customFields || [],
     members: initialData.members || [],
     todos: initialData.todos || [],
     aiEmployees: initialData.aiEmployees || [],
