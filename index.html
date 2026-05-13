@@ -4998,7 +4998,7 @@ function InvoiceImportModal({contacts, invoiceSettings, quoteSettings, onImport,
     let contactId=contactMatch?.id||'';
     let newContact=null;
     if(!contactMatch&&createContact&&form.firma.trim()){
-      newContact={id:uid(),firma:form.firma,sectionId:'',customFields:{},fields:{ansprechpartner:form.ansprechpartner,email:form.email,telefon:form.telefon,address:form.address,zip:form.zip,city:form.city,country:form.country,taxId:form.taxId}};
+      newContact={id:uid(),firma:form.firma,ansprechpartner:form.ansprechpartner,email:form.email,telefon:form.telefon,address:form.address,zip:form.zip,city:form.city,country:form.country||'Österreich',taxId:form.taxId,sectionId:(contacts[0]?.sectionId||'hauptkunden'),subsectionId:null,status:'Aktiv',notizen:'',umsatz:'',reminders:[],activities:[],customValues:{}};
       contactId=newContact.id;
     }
     const inv={id:uid(),number:form.number||nextInvoiceNumber(invoiceSettings||{}),status:form.status,contactId,contactSnapshot:snap,items:form.items,date:form.date,dueDate:form.dueDate,serviceDate:form.serviceDate,serviceEndDate:'',taxRate:form.taxRate,discount:form.discount,title:'',notes:form.notes,paymentNote:form.paymentNote,createdAt:new Date().toISOString(),paidAt:form.status==='bezahlt'?form.date:null,fromQuoteId:''};
@@ -5144,7 +5144,7 @@ function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quote
   const [search,setSearch]=useState('');
   const cur=quoteSettings?.currency||'EUR';
   const today=new Date().toISOString().slice(0,10);
-  const enriched=(invoices||[]).map(inv=>(inv.dueDate&&inv.dueDate<today&&inv.status==='offen')?{...inv,status:'ueberfaellig'}:inv);
+  const enriched=(invoices||[]).map(inv=>(inv.dueDate&&inv.dueDate<today&&(inv.status==='offen'||inv.status==='gesendet'))?{...inv,status:'ueberfaellig'}:inv);
   const filtered=enriched.filter(inv=>{
     if(statusFilter&&inv.status!==statusFilter)return false;
     if(search){const s=search.toLowerCase();return[inv.number,inv.title,inv.contactSnapshot?.firma].some(f=>f&&f.toLowerCase().includes(s));}
@@ -6740,7 +6740,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             </button>
           );})()}
           {/* Rechnungen */}
-          {(()=>{const isActive=activeId===INVOICES_VIEW;const invs=state.invoices||[];const count=invs.length;const overdue=invs.filter(i=>i.dueDate&&i.dueDate<new Date().toISOString().slice(0,10)&&i.status==='offen').length;return(
+          {(()=>{const isActive=activeId===INVOICES_VIEW;const invs=state.invoices||[];const count=invs.length;const overdue=invs.filter(i=>i.dueDate&&i.dueDate<new Date().toISOString().slice(0,10)&&(i.status==='offen'||i.status==='gesendet')).length;return(
             <button onClick={()=>setActiveId(INVOICES_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
               onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
               onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
@@ -7046,7 +7046,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='quoteSettings'&&<QuoteSettingsModal settings={state.quoteSettings} onSave={s=>upd({quoteSettings:s})} onClose={()=>setModal(null)}/>}
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
-    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})}}));}} onClose={()=>setModal(null)}/>}
+    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
       quote={editingQuote}
