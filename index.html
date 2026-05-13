@@ -5319,7 +5319,7 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
   const fmtDate=iso=>iso?new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
 
   const renderBlock=(block,idx)=>{
-    const numIdx=block.type==='numbered'?blocks.slice(0,idx).filter(b=>b.type==='numbered').length+1:0;
+    const numIdx=(()=>{if(block.type!=='numbered')return 0;let n=1;for(let i=idx-1;i>=0;i--){if(blocks[i].type==='numbered')n++;else break;}return n;})();
     return(
       <div key={block.id} style={{position:'relative',marginBottom:block.type==='divider'?6:0}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:6,padding:'1px 0'}}
@@ -5590,7 +5590,7 @@ function CampaignsView({campaigns, onUpdate}){
                         <div key={f.id} style={{display:'flex',alignItems:'center',gap:7,padding:'5px 8px',background:'#F8F7F5',borderRadius:7}}>
                           <span style={{fontSize:12,color:c.color||'#6366f1'}}>📄</span>
                           <span style={{fontSize:12.5,color:'#3F3A35',flex:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</span>
-                          {f.content&&<span style={{fontSize:10.5,color:'#C8C3BD'}}>{f.content.length} Z.</span>}
+                          {f.content&&<span style={{fontSize:10.5,color:'#C8C3BD'}}>{(()=>{try{const bs=JSON.parse(f.content);return Array.isArray(bs)?bs.reduce((s,b)=>s+(b.content?.length||0),0):f.content.length;}catch{return f.content.length;}})()}{' '}Z.</span>}
                         </div>
                       ))}
                       {(c.files||[]).length>3&&<div style={{fontSize:11.5,color:'#A8A39D',textAlign:'center',paddingTop:2}}>+{(c.files||[]).length-3} weitere Dateien</div>}
