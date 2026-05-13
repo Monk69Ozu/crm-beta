@@ -846,7 +846,7 @@ function makeOTPAuthURL(secret, email='WebArs CRM') {
 </script>
 
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useCallback } = React;
 
 // ── HELPERS ─────────────────────────────────────────────────────
 const uid     = () => Math.random().toString(36).slice(2,10);
