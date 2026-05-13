@@ -967,7 +967,7 @@ const DEFAULT_ONBOARDING_FORM = {
   published: false,
 };
 
-const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[]};
+const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[]};
 
 const lbl = {display:'block',fontSize:11,fontWeight:600,color:'#A8A39D',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'};
 
@@ -4484,6 +4484,127 @@ function InvoicePreview({invoice, settings, invoiceSettings, onClose}){
   );
 }
 
+// ── Mahnung Preview ─────────────────────────────────────────────
+function MahnungPreview({invoice, settings, onSave, onClose}){
+  const totals=quoteTotals(invoice);
+  const cur=settings?.currency||'EUR';
+  const accent=settings?.accentColor||'#141210';
+  const mahnLevel=(invoice.mahnungen?.length||0)+1;
+  const levelLabel=mahnLevel===1?'1. Mahnung':mahnLevel===2?'2. Mahnung':`${mahnLevel}. Mahnung`;
+  const fmtD=iso=>iso?new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'long',year:'numeric'}):'';
+  const today=new Date().toISOString().slice(0,10);
+  const [newDueDate,setNewDueDate]=useState(new Date(Date.now()+14*86400000).toISOString().slice(0,10));
+  const [note,setNote]=useState('');
+  const [saved,setSaved]=useState(false);
+  const doSave=()=>{
+    const m={id:uid(),level:mahnLevel,date:today,newDueDate,note};
+    onSave({...invoice,mahnungen:[...(invoice.mahnungen||[]),m]});
+    setSaved(true);
+  };
+  return(
+    <div className="quote-print-page" style={{position:'fixed',inset:0,zIndex:1001,overflow:'auto'}}>
+      <div className="quote-no-print" style={{position:'sticky',top:0,zIndex:10,background:'rgba(15,14,12,0.92)',backdropFilter:'blur(8px)',padding:'12px 20px',display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',boxShadow:'0 4px 20px rgba(0,0,0,0.2)'}}>
+        <div style={{color:'rgba(255,255,255,0.5)',fontSize:12.5,display:'flex',alignItems:'center',gap:10}}>
+          <span style={{color:'white',fontFamily:'monospace'}}>{invoice.number}</span>
+          <span style={{color:'#fbbf24',fontWeight:600,padding:'2px 8px',background:'rgba(255,255,255,0.1)',borderRadius:99,fontSize:11}}>🔔 {levelLabel}</span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <label style={{color:'rgba(255,255,255,0.6)',fontSize:12}}>Neues Zahlungsziel:</label>
+          <input type="date" value={newDueDate} onChange={e=>setNewDueDate(e.target.value)} style={{fontSize:12,padding:'5px 8px',borderRadius:6,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.1)',color:'white'}}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <label style={{color:'rgba(255,255,255,0.6)',fontSize:12}}>Zusatz-Text:</label>
+          <input value={note} onChange={e=>setNote(e.target.value)} placeholder="Optionaler Hinweis…" style={{fontSize:12,padding:'5px 8px',borderRadius:6,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.1)',color:'white',width:200}}/>
+        </div>
+        <div style={{flex:1}}/>
+        <button className="btn btn-ghost btn-sm" onClick={()=>{const paper=document.querySelector('.mahnung-paper');if(!paper)return;const html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mahnung '+invoice.number+'</title></head><body style="margin:0;padding:20px;font-family:sans-serif">'+paper.outerHTML+'</body></html>';const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));a.download='mahnung-'+invoice.number+'.html';a.click();URL.revokeObjectURL(a.href);}} style={{color:'rgba(255,255,255,0.7)',borderColor:'rgba(255,255,255,0.2)'}}>💾 Als HTML</button>
+        <button className="btn btn-primary btn-sm" onClick={()=>window.print()}><Icons.Print/>Drucken / PDF</button>
+        {saved
+          ?<span style={{color:'#4ade80',fontWeight:600,fontSize:12.5}}>✓ Gespeichert</span>
+          :<button onClick={doSave} style={{background:'#f59e0b',border:'none',borderRadius:8,padding:'6px 14px',cursor:'pointer',color:'white',fontSize:12.5,fontWeight:600}}>✓ Als gesendet markieren</button>
+        }
+        <button onClick={onClose} style={{background:'rgba(255,255,255,0.1)',border:'none',borderRadius:8,padding:8,color:'white',lineHeight:0,cursor:'pointer'}}><Icons.Close/></button>
+      </div>
+      <div className="mahnung-paper quote-paper">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'7mm'}}>
+          <div>
+            {settings?.logoUrl
+              ?<><img src={settings.logoUrl} alt="Logo" style={{height:'13mm',maxWidth:'55mm',objectFit:'contain',marginBottom:'2mm',display:'block'}}/><div style={{fontSize:'10pt',fontWeight:700,color:accent}}>{settings?.companyName}</div></>
+              :<div style={{fontSize:'15pt',fontWeight:800,color:accent,letterSpacing:'-0.02em'}}>{settings?.companyName||'Firma'}</div>
+            }
+            {settings?.companyAddress&&<div style={{fontSize:'7.5pt',color:'#7A7570',whiteSpace:'pre-line',lineHeight:1.5,marginTop:'1mm'}}>{settings.companyAddress}</div>}
+            {settings?.companyEmail&&<div style={{fontSize:'7.5pt',color:'#7A7570'}}>{settings.companyEmail}</div>}
+            {settings?.companyPhone&&<div style={{fontSize:'7.5pt',color:'#7A7570'}}>{settings.companyPhone}</div>}
+            {settings?.taxId&&<div style={{fontSize:'7pt',color:'#9A9590',marginTop:'1mm'}}>UID: {settings.taxId}</div>}
+          </div>
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:'26pt',fontWeight:900,color:'#b91c1c',letterSpacing:'-0.03em',lineHeight:1}}>{levelLabel.toUpperCase()}</div>
+            <div style={{fontSize:'9pt',color:'#6B6560',marginTop:'1.5mm'}}>zu Rechnung <span style={{fontFamily:'monospace',fontWeight:600}}>{invoice.number}</span></div>
+            <div style={{fontSize:'8pt',color:'#9A9590',marginTop:'1mm'}}>{fmtD(today)}</div>
+          </div>
+        </div>
+        <div style={{marginBottom:'8mm',padding:'3.5mm 4mm',background:'#FAFAF8',borderRadius:'2mm',border:'0.5pt solid #E5E1DC',display:'inline-block',minWidth:'60mm'}}>
+          <div style={{fontSize:'10.5pt',fontWeight:700,color:'#141210'}}>{invoice.contactSnapshot?.firma||'—'}</div>
+          {invoice.contactSnapshot?.ansprechpartner&&<div style={{fontSize:'8.5pt',color:'#6B6560',marginTop:'0.5mm'}}>z.Hd. {invoice.contactSnapshot.ansprechpartner}</div>}
+          {invoice.contactSnapshot?.address&&<div style={{fontSize:'8.5pt',color:'#3F3A35',marginTop:'1mm'}}>{invoice.contactSnapshot.address}</div>}
+          {(invoice.contactSnapshot?.zip||invoice.contactSnapshot?.city)&&<div style={{fontSize:'8.5pt',color:'#3F3A35'}}>{[invoice.contactSnapshot.zip,invoice.contactSnapshot.city].filter(Boolean).join(' ')}</div>}
+          {invoice.contactSnapshot?.country&&<div style={{fontSize:'8.5pt',color:'#3F3A35'}}>{invoice.contactSnapshot.country}</div>}
+        </div>
+        <div style={{marginBottom:'4mm'}}><div style={{fontSize:'11pt',fontWeight:700,color:'#141210'}}>Betreff: {levelLabel} zu Rechnung {invoice.number}{invoice.title?` — ${invoice.title}`:''}</div></div>
+        <div style={{fontSize:'10pt',color:'#1F1B17',lineHeight:1.7,marginBottom:'5mm'}}>
+          <p style={{marginBottom:'3mm'}}>Sehr geehrte Damen und Herren,</p>
+          <p style={{marginBottom:'3mm'}}>{mahnLevel===1?'trotz des bereits abgelaufenen Zahlungsziels haben wir bis heute keinen Zahlungseingang für die nachstehende Rechnung feststellen können. Wir bitten Sie, dies auf eine Unachtsamkeit zurückzuführen und ersuchen um umgehende Begleichung des offenen Betrages.':`wir haben Ihnen bereits ${mahnLevel-1}. Mahnung${mahnLevel-1>1?'en':''} zugesandt, jedoch ist der ausstehende Betrag nach wie vor nicht eingegangen. Wir ersuchen Sie dringend, den offenen Betrag umgehend zu begleichen.`}</p>
+        </div>
+        <div style={{marginBottom:'5mm',border:`1pt solid ${accent}`,borderRadius:'2mm',overflow:'hidden'}}>
+          <div style={{background:accent,padding:'3mm 4mm',display:'grid',gridTemplateColumns:'1fr 90px 90px',gap:'2mm'}}>
+            {['Beschreibung','Fällig am','Betrag'].map((h,i)=>(
+              <div key={h} style={{fontSize:'6.5pt',fontWeight:700,color:'rgba(255,255,255,0.85)',textTransform:'uppercase',letterSpacing:'0.1em',textAlign:i>0?'right':'left'}}>{h}</div>
+            ))}
+          </div>
+          <div style={{background:'white',padding:'3mm 4mm',display:'grid',gridTemplateColumns:'1fr 90px 90px',gap:'2mm',alignItems:'center'}}>
+            <div>
+              <div style={{fontSize:'9.5pt',fontWeight:600,color:'#141210'}}>Rechnung {invoice.number}</div>
+              {invoice.title&&<div style={{fontSize:'8pt',color:'#6B6560'}}>{invoice.title}</div>}
+              <div style={{fontSize:'8pt',color:'#9A9590',marginTop:'0.5mm'}}>Rechnungsdatum: {fmtD(invoice.date)}</div>
+            </div>
+            <div style={{textAlign:'right',fontSize:'9pt',color:'#b91c1c',fontWeight:600}}>{fmtD(invoice.dueDate)}</div>
+            <div style={{textAlign:'right',fontSize:'11pt',fontWeight:700,color:'#b91c1c',fontVariantNumeric:'tabular-nums'}}>{fmtMoney(totals.total,cur)}</div>
+          </div>
+          <div style={{background:'#FEF2F2',padding:'3mm 4mm',display:'flex',justifyContent:'space-between',alignItems:'center',borderTop:'0.5pt solid #FECACA'}}>
+            <div style={{fontSize:'9pt',fontWeight:700,color:'#b91c1c'}}>Offener Betrag</div>
+            <div style={{fontSize:'13pt',fontWeight:800,color:'#b91c1c',fontVariantNumeric:'tabular-nums'}}>{fmtMoney(totals.total,cur)}</div>
+          </div>
+        </div>
+        <div style={{marginBottom:'5mm',padding:'3.5mm 5mm',background:'#FEF2F2',borderRadius:'2mm',borderLeft:'3pt solid #b91c1c'}}>
+          <div style={{fontSize:'9.5pt',color:'#141210',lineHeight:1.6}}>Wir ersuchen Sie, den Betrag von <strong>{fmtMoney(totals.total,cur)}</strong> bis spätestens <strong>{fmtD(newDueDate)}</strong> auf das unten angegebene Konto zu überweisen. Bitte geben Sie als Verwendungszweck die Rechnungsnummer <strong>{invoice.number}</strong> an.</div>
+        </div>
+        {note&&<div style={{marginBottom:'5mm',fontSize:'9.5pt',color:'#1F1B17',lineHeight:1.6,whiteSpace:'pre-line'}}>{note}</div>}
+        <div style={{fontSize:'10pt',color:'#1F1B17',lineHeight:1.7,marginBottom:'8mm'}}>
+          <p style={{marginBottom:'3mm'}}>Bei bereits erfolgter Zahlung bitten wir Sie, dieses Schreiben als gegenstandslos zu betrachten. Bei Fragen stehen wir Ihnen gerne zur Verfügung.</p>
+          <p>Mit freundlichen Grüßen,</p>
+          <p style={{marginTop:'6mm',fontWeight:700}}>{settings?.companyName||''}</p>
+        </div>
+        {(settings?.iban||settings?.bankName||invoice.paymentNote)&&(
+          <div style={{marginBottom:'5mm',padding:'3.5mm 5mm',background:'#F3F0EB',borderRadius:'2mm',borderLeft:`3pt solid ${accent}`}}>
+            <div style={{fontSize:'6.5pt',color:'#9A9590',textTransform:'uppercase',letterSpacing:'0.14em',fontWeight:700,marginBottom:'1.5mm'}}>Zahlungsinformationen</div>
+            {invoice.paymentNote&&<div style={{fontSize:'8.5pt',color:'#3F3A35',marginBottom:'1.5mm',lineHeight:1.5}}>{invoice.paymentNote}</div>}
+            <div style={{display:'flex',gap:'5mm',flexWrap:'wrap',fontSize:'8pt'}}>
+              {settings?.bankName&&<div><span style={{color:'#9A9590'}}>Bank: </span><span style={{fontWeight:600}}>{settings.bankName}</span></div>}
+              {settings?.iban&&<div><span style={{color:'#9A9590'}}>IBAN: </span><span style={{fontFamily:'monospace',fontWeight:600}}>{settings.iban}</span></div>}
+              {settings?.bic&&<div><span style={{color:'#9A9590'}}>BIC: </span><span style={{fontFamily:'monospace',fontWeight:600}}>{settings.bic}</span></div>}
+            </div>
+          </div>
+        )}
+        <div style={{paddingTop:'3mm',borderTop:'0.5pt solid #E5E1DC',display:'flex',gap:'6mm',fontSize:'7pt',color:'#9A9590',lineHeight:1.5}}>
+          <div style={{flex:1}}><div style={{fontWeight:600,color:'#5F5A55',marginBottom:'0.5mm'}}>{settings?.companyName}</div>{settings?.companyAddress&&<div style={{whiteSpace:'pre-line'}}>{settings.companyAddress}</div>}</div>
+          <div style={{flex:1}}><div style={{fontWeight:600,color:'#5F5A55',marginBottom:'0.5mm'}}>Kontakt</div>{settings?.companyEmail&&<div>{settings.companyEmail}</div>}{settings?.companyPhone&&<div>{settings.companyPhone}</div>}{settings?.taxId&&<div>UID: {settings.taxId}</div>}</div>
+          {(settings?.iban||settings?.bankName)&&<div style={{flex:1}}><div style={{fontWeight:600,color:'#5F5A55',marginBottom:'0.5mm'}}>Bankverbindung</div>{settings?.bankName&&<div>{settings.bankName}</div>}{settings?.iban&&<div style={{fontFamily:'monospace'}}>{settings.iban}</div>}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Snapshot Restore Modal ───────────────────────────────────────
 function SnapshotRestoreModal({cryptoKey, onRestore, onClose}){
   const [snaps] = useState(()=>getLocalSnapshots());
@@ -5020,7 +5141,7 @@ function InvoiceImportModal({contacts, invoiceSettings, quoteSettings, onImport,
   );
 }
 
-function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quotes, onCreate, onOpen, onDelete, onMarkPaid, onDuplicate, onImport}){
+function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quotes, onCreate, onOpen, onDelete, onMarkPaid, onDuplicate, onImport, onMahnung}){
   const [statusFilter,setStatusFilter]=useState('');
   const [search,setSearch]=useState('');
   const cur=quoteSettings?.currency||'EUR';
@@ -5091,6 +5212,9 @@ function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quote
                     {inv.status!=='bezahlt'&&inv.status!=='storniert'&&(
                       <button onClick={ev=>{ev.stopPropagation();onMarkPaid(inv.id);}} className="btn btn-ghost btn-sm" style={{fontSize:11,padding:'3px 8px',color:'#16a34a',borderColor:'#BBF7D0'}}>✓ Bezahlt</button>
                     )}
+                    {overdue&&onMahnung&&(
+                      <button onClick={ev=>{ev.stopPropagation();onMahnung(inv);}} className="btn btn-ghost btn-sm" style={{fontSize:11,padding:'3px 8px',color:'#b45309',borderColor:'#FDE68A'}}>🔔 Mahnung{(inv.mahnungen?.length||0)>0?` (${inv.mahnungen.length})`:''}</button>
+                    )}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
                     <button onClick={ev=>{ev.stopPropagation();onDuplicate(inv);}} title="Duplizieren" style={{background:'none',border:'none',color:'#C8C3BD',cursor:'pointer',fontSize:14,padding:'3px 6px',lineHeight:1,borderRadius:6,transition:'color .15s,background .15s'}} onMouseEnter={e=>{e.currentTarget.style.color='#2563EB';e.currentTarget.style.background='#EFF6FF';}} onMouseLeave={e=>{e.currentTarget.style.color='#C8C3BD';e.currentTarget.style.background='none';}}>⧉</button>
@@ -5102,6 +5226,241 @@ function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quote
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  KAMPAGNEN & IDEEN
+// ══════════════════════════════════════════════════════════════════
+const CAMPAIGN_COLORS=['#6366f1','#ec4899','#f59e0b','#10b981','#3b82f6','#8b5cf6','#ef4444','#14b8a6'];
+const CAMPAIGN_EMOJIS=['💡','📢','🚀','🎯','📌','⚡','🔥','🌟','📝','🎨','💼','📊'];
+
+function CampaignsView({campaigns, onUpdate}){
+  const [selCamp,setSelCamp]=useState(null);
+  const [selFile,setSelFile]=useState(null);
+  const [addingCamp,setAddingCamp]=useState(false);
+  const [newCampName,setNewCampName]=useState('');
+  const [newCampEmoji,setNewCampEmoji]=useState('💡');
+  const [addingFile,setAddingFile]=useState(false);
+  const [newFileName,setNewFileName]=useState('');
+  const [renamingCamp,setRenamingCamp]=useState(null);
+  const [renamingFile,setRenamingFile]=useState(null);
+  const [renameVal,setRenameVal]=useState('');
+  const [fileContent,setFileContent]=useState('');
+  const [saveTimer,setSaveTimer]=useState(null);
+
+  // Sync fileContent when selection changes
+  React.useEffect(()=>{
+    if(selFile&&selCamp){
+      const camp=(campaigns||[]).find(c=>c.id===selCamp);
+      const file=(camp?.files||[]).find(f=>f.id===selFile);
+      setFileContent(file?.content||'');
+    }
+  },[selFile,selCamp]);
+
+  const saveFile=React.useCallback((content)=>{
+    if(!selCamp||!selFile)return;
+    const now=new Date().toISOString();
+    onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:(c.files||[]).map(f=>f.id!==selFile?f:{...f,content,updatedAt:now})}));
+  },[selCamp,selFile,campaigns,onUpdate]);
+
+  const handleContentChange=val=>{
+    setFileContent(val);
+    if(saveTimer)clearTimeout(saveTimer);
+    setSaveTimer(setTimeout(()=>saveFile(val),800));
+  };
+
+  const createCamp=()=>{
+    if(!newCampName.trim())return;
+    const c={id:uid(),name:newCampName.trim(),emoji:newCampEmoji,color:CAMPAIGN_COLORS[Math.floor(Math.random()*CAMPAIGN_COLORS.length)],createdAt:new Date().toISOString(),files:[]};
+    onUpdate([...(campaigns||[]),c]);
+    setSelCamp(c.id);setSelFile(null);setAddingCamp(false);setNewCampName('');setNewCampEmoji('💡');
+  };
+  const deleteCamp=id=>{
+    if(!confirm('Kampagne und alle Dateien darin löschen?'))return;
+    onUpdate((campaigns||[]).filter(c=>c.id!==id));
+    if(selCamp===id){setSelCamp(null);setSelFile(null);}
+  };
+  const createFile=()=>{
+    if(!newFileName.trim()||!selCamp)return;
+    const f={id:uid(),name:newFileName.trim(),content:'',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+    onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:[...(c.files||[]),f]}));
+    setSelFile(f.id);setFileContent('');setAddingFile(false);setNewFileName('');
+  };
+  const deleteFile=(campId,fileId)=>{
+    if(!confirm('Datei löschen?'))return;
+    onUpdate((campaigns||[]).map(c=>c.id!==campId?c:{...c,files:(c.files||[]).filter(f=>f.id!==fileId)}));
+    if(selFile===fileId){setSelFile(null);setFileContent('');}
+  };
+  const doRenameCamp=()=>{
+    if(!renameVal.trim())return;
+    onUpdate((campaigns||[]).map(c=>c.id!==renamingCamp?c:{...c,name:renameVal.trim()}));
+    setRenamingCamp(null);setRenameVal('');
+  };
+  const doRenameFile=()=>{
+    if(!renameVal.trim()||!selCamp)return;
+    onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:(c.files||[]).map(f=>f.id!==renamingFile?f:{...f,name:renameVal.trim()})}));
+    setRenamingFile(null);setRenameVal('');
+  };
+
+  const activeCamp=(campaigns||[]).find(c=>c.id===selCamp);
+  const activeFile=activeCamp&&selFile?(activeCamp.files||[]).find(f=>f.id===selFile):null;
+  const fmtDate=iso=>iso?new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
+
+  return(
+    <div style={{display:'flex',flex:1,overflow:'hidden'}}>
+      {/* ── LEFT: Kampagnen-Liste ── */}
+      <div style={{width:260,flexShrink:0,background:'#FAFAF8',borderRight:'1px solid rgba(0,0,0,0.08)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{padding:'14px 16px 10px',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid rgba(0,0,0,0.06)'}}>
+          <span style={{fontWeight:700,fontSize:13.5,color:'#141210',flex:1}}>Kampagnen</span>
+          <button onClick={()=>{setAddingCamp(true);setNewCampName('');setNewCampEmoji('💡');}} className="btn btn-primary btn-sm" style={{fontSize:11.5,padding:'4px 10px'}}><Icons.Plus/>Neu</button>
+        </div>
+
+        {addingCamp&&(
+          <div style={{padding:'12px 14px',background:'white',borderBottom:'1px solid rgba(0,0,0,0.07)'}}>
+            <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:6}}>Emoji wählen</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:10}}>
+              {CAMPAIGN_EMOJIS.map(e=>(
+                <button key={e} onClick={()=>setNewCampEmoji(e)} style={{fontSize:16,padding:'4px 6px',borderRadius:7,border:`2px solid ${newCampEmoji===e?'#141210':'transparent'}`,background:newCampEmoji===e?'#F0EDE8':'transparent',cursor:'pointer',lineHeight:1}}>{e}</button>
+              ))}
+            </div>
+            <input value={newCampName} onChange={e=>setNewCampName(e.target.value)} autoFocus placeholder="Kampagnenname…"
+              onKeyDown={e=>{if(e.key==='Enter')createCamp();if(e.key==='Escape'){setAddingCamp(false);}}}
+              style={{width:'100%',boxSizing:'border-box',fontSize:13,marginBottom:8}}/>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-primary btn-sm" onClick={createCamp} style={{flex:1}}>Erstellen</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setAddingCamp(false)}>✕</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{flex:1,overflowY:'auto',padding:'8px 8px'}}>
+          {(campaigns||[]).length===0&&!addingCamp&&(
+            <div style={{textAlign:'center',padding:'40px 16px',color:'#C8C3BD'}}>
+              <div style={{fontSize:32,marginBottom:8}}>💡</div>
+              <div style={{fontSize:13,fontWeight:600,color:'#C0BBB5',marginBottom:6}}>Noch keine Kampagnen</div>
+              <div style={{fontSize:12,lineHeight:1.5}}>Erstelle deine erste Kampagne oder Idee.</div>
+            </div>
+          )}
+          {(campaigns||[]).map(c=>(
+            <div key={c.id}
+              onClick={()=>{setSelCamp(c.id);setSelFile(null);setFileContent('');}}
+              style={{display:'flex',alignItems:'center',gap:10,padding:'10px 10px',borderRadius:10,marginBottom:2,cursor:'pointer',background:selCamp===c.id?'rgba(0,0,0,0.06)':'transparent',transition:'background .12s'}}
+              onMouseEnter={e=>{if(selCamp!==c.id)e.currentTarget.style.background='rgba(0,0,0,0.03)';}}
+              onMouseLeave={e=>{if(selCamp!==c.id)e.currentTarget.style.background='transparent';}}>
+              <div style={{width:34,height:34,borderRadius:9,background:c.color||'#6366f1',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,flexShrink:0}}>{c.emoji||'💡'}</div>
+              <div style={{flex:1,minWidth:0}}>
+                {renamingCamp===c.id
+                  ?<input value={renameVal} onChange={e=>setRenameVal(e.target.value)} autoFocus onClick={e=>e.stopPropagation()}
+                      onKeyDown={e=>{if(e.key==='Enter')doRenameCamp();if(e.key==='Escape'){setRenamingCamp(null);setRenameVal('');}}}
+                      onBlur={doRenameCamp} style={{fontSize:13,width:'100%',padding:'2px 6px'}}/>
+                  :<div style={{fontSize:13.5,fontWeight:600,color:'#141210',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{c.name}</div>
+                }
+                <div style={{fontSize:11,color:'#A8A39D',marginTop:1}}>{(c.files||[]).length} {(c.files||[]).length===1?'Datei':'Dateien'}</div>
+              </div>
+              <div style={{display:'flex',gap:2,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>{setRenamingCamp(c.id);setRenameVal(c.name);}} title="Umbenennen" style={{background:'none',border:'none',color:'#C8C3BD',cursor:'pointer',fontSize:12,padding:'3px 5px',borderRadius:5,lineHeight:1,transition:'color .12s'}} onMouseEnter={e=>e.currentTarget.style.color='#6B6560'} onMouseLeave={e=>e.currentTarget.style.color='#C8C3BD'}>✎</button>
+                <button onClick={()=>deleteCamp(c.id)} title="Löschen" style={{background:'none',border:'none',color:'#C8C3BD',cursor:'pointer',fontSize:15,padding:'3px 5px',borderRadius:5,lineHeight:1,transition:'color .12s'}} onMouseEnter={e=>e.currentTarget.style.color='#C0392B'} onMouseLeave={e=>e.currentTarget.style.color='#C8C3BD'}>×</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── MIDDLE/RIGHT: Dateien + Editor ── */}
+      {!selCamp?(
+        <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#C8C3BD'}}>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:48,marginBottom:12,opacity:.4}}>📂</div>
+            <div style={{fontSize:15,fontWeight:600,color:'#C0BBB5'}}>Kampagne auswählen</div>
+            <div style={{fontSize:12.5,marginTop:6,color:'#C8C3BD'}}>Klicke links auf eine Kampagne um die Dateien zu sehen.</div>
+          </div>
+        </div>
+      ):(
+        <div style={{display:'flex',flex:1,overflow:'hidden'}}>
+          {/* Datei-Liste */}
+          <div style={{width:220,flexShrink:0,background:'white',borderRight:'1px solid rgba(0,0,0,0.07)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+            <div style={{padding:'12px 14px 10px',borderBottom:'1px solid rgba(0,0,0,0.06)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+                <div style={{width:22,height:22,borderRadius:6,background:activeCamp?.color||'#6366f1',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,flexShrink:0}}>{activeCamp?.emoji||'💡'}</div>
+                <div style={{fontWeight:700,fontSize:13,color:'#141210',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{activeCamp?.name}</div>
+              </div>
+              <div style={{fontSize:11,color:'#A8A39D',marginBottom:8}}>{(activeCamp?.files||[]).length} Dateien</div>
+              <button onClick={()=>{setAddingFile(true);setNewFileName('');}} className="btn btn-primary btn-sm" style={{width:'100%',fontSize:12}}><Icons.Plus/>Neue Datei</button>
+            </div>
+            {addingFile&&(
+              <div style={{padding:'10px 12px',background:'#FAFAF8',borderBottom:'1px solid rgba(0,0,0,0.06)'}}>
+                <input value={newFileName} onChange={e=>setNewFileName(e.target.value)} autoFocus placeholder="Dateiname…"
+                  onKeyDown={e=>{if(e.key==='Enter')createFile();if(e.key==='Escape')setAddingFile(false);}}
+                  style={{width:'100%',boxSizing:'border-box',fontSize:12.5,marginBottom:6}}/>
+                <div style={{display:'flex',gap:5}}>
+                  <button className="btn btn-primary btn-sm" onClick={createFile} style={{flex:1,fontSize:12}}>OK</button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>setAddingFile(false)} style={{fontSize:12}}>✕</button>
+                </div>
+              </div>
+            )}
+            <div style={{flex:1,overflowY:'auto',padding:'6px 6px'}}>
+              {(activeCamp?.files||[]).length===0&&!addingFile&&(
+                <div style={{textAlign:'center',padding:'30px 12px',color:'#C8C3BD'}}>
+                  <div style={{fontSize:24,marginBottom:6}}>📄</div>
+                  <div style={{fontSize:12,color:'#C0BBB5',lineHeight:1.5}}>Noch keine Dateien. Klicke auf "+ Neue Datei".</div>
+                </div>
+              )}
+              {(activeCamp?.files||[]).map(f=>(
+                <div key={f.id}
+                  onClick={()=>setSelFile(f.id)}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'9px 10px',borderRadius:9,marginBottom:2,cursor:'pointer',background:selFile===f.id?'rgba(99,102,241,0.08)':'transparent',border:`1px solid ${selFile===f.id?'rgba(99,102,241,0.15)':'transparent'}`,transition:'all .12s'}}
+                  onMouseEnter={e=>{if(selFile!==f.id)e.currentTarget.style.background='rgba(0,0,0,0.04)';}}
+                  onMouseLeave={e=>{if(selFile!==f.id)e.currentTarget.style.background='transparent';}}>
+                  <span style={{fontSize:14,flexShrink:0,color:selFile===f.id?activeCamp?.color||'#6366f1':'#9A9590'}}>📄</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    {renamingFile===f.id
+                      ?<input value={renameVal} onChange={e=>setRenameVal(e.target.value)} autoFocus onClick={e=>e.stopPropagation()}
+                          onKeyDown={e=>{if(e.key==='Enter')doRenameFile();if(e.key==='Escape'){setRenamingFile(null);setRenameVal('');}}}
+                          onBlur={doRenameFile} style={{fontSize:12,width:'100%',padding:'1px 4px'}}/>
+                      :<div style={{fontSize:13,fontWeight:selFile===f.id?600:400,color:selFile===f.id?'#141210':'#3F3A35',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</div>
+                    }
+                    <div style={{fontSize:10.5,color:'#C0BBB5',marginTop:1}}>{fmtDate(f.updatedAt||f.createdAt)}</div>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:1,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                    <button onClick={()=>{setRenamingFile(f.id);setRenameVal(f.name);}} title="Umbenennen" style={{background:'none',border:'none',color:'transparent',cursor:'pointer',fontSize:11,padding:'2px 4px',borderRadius:4,lineHeight:1,transition:'color .1s'}} onMouseEnter={e=>e.currentTarget.style.color='#A8A39D'} onMouseLeave={e=>e.currentTarget.style.color='transparent'}>✎</button>
+                    <button onClick={()=>deleteFile(selCamp,f.id)} title="Löschen" style={{background:'none',border:'none',color:'transparent',cursor:'pointer',fontSize:13,padding:'2px 4px',borderRadius:4,lineHeight:1,transition:'color .1s'}} onMouseEnter={e=>e.currentTarget.style.color='#C0392B'} onMouseLeave={e=>e.currentTarget.style.color='transparent'}>×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Editor */}
+          {!selFile?(
+            <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#C8C3BD',background:'#F8F7F5'}}>
+              <div style={{textAlign:'center'}}>
+                <div style={{fontSize:40,marginBottom:10,opacity:.4}}>📝</div>
+                <div style={{fontSize:14,fontWeight:600,color:'#C0BBB5'}}>Datei auswählen</div>
+                <div style={{fontSize:12.5,marginTop:6}}>Wähle eine Datei links oder erstelle eine neue.</div>
+              </div>
+            </div>
+          ):(
+            <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:'white'}}>
+              <div style={{padding:'12px 20px',borderBottom:'1px solid rgba(0,0,0,0.07)',display:'flex',alignItems:'center',gap:12,background:'white',flexShrink:0}}>
+                <div style={{width:8,height:8,borderRadius:'50%',background:activeCamp?.color||'#6366f1',flexShrink:0}}></div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:14,color:'#141210'}}>{activeFile?.name}</div>
+                  <div style={{fontSize:11,color:'#B0ABA5',marginTop:1}}>{activeCamp?.name} · Zuletzt gespeichert {fmtDate(activeFile?.updatedAt||activeFile?.createdAt)}</div>
+                </div>
+                <div style={{fontSize:11,color:'#C8C3BD'}}>Wird automatisch gespeichert</div>
+              </div>
+              <textarea
+                value={fileContent}
+                onChange={e=>handleContentChange(e.target.value)}
+                placeholder="Schreibe hier deine Notizen, Ideen oder Details zur Kampagne…"
+                style={{flex:1,border:'none',outline:'none',resize:'none',padding:'24px 28px',fontSize:15,lineHeight:1.8,color:'#1F1B17',fontFamily:'inherit',background:'white'}}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -5938,6 +6297,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     tokens: initialData.tokens || [],
     forms: initialData.forms && initialData.forms.length ? initialData.forms : [DEFAULT_ONBOARDING_FORM],
     formResponses: initialData.formResponses || [],
+    campaigns: initialData.campaigns || [],
   }));
   const TODOS_VIEW = '__todos__';
   const AI_VIEW = '__ai__';
@@ -5946,6 +6306,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const INVOICES_VIEW = '__invoices__';
   const TOKENS_VIEW = '__tokens__';
   const FORMS_VIEW = '__forms__';
+  const CAMPAIGNS_VIEW = '__campaigns__';
   const [activeId,setActiveId]=useState(initialData.sections[0]?.id);
   const [activeSubId,setActiveSubId]=useState(null);
   const [search,setSearch]=useState('');
@@ -5961,6 +6322,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const [previewQuote,setPreviewQuote]=useState(null);
   const [editingInvoice,setEditingInvoice]=useState(null);
   const [previewInvoice,setPreviewInvoice]=useState(null);
+  const [mahnungInvoice,setMahnungInvoice]=useState(null);
   const [jarvisDraft,setJarvisDraft]=useState(null);
 
   // Deep-link handler: ?formresponse=BASE64 (from public form submission)
@@ -6169,6 +6531,16 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               {fcount>0&&!rcount&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{fcount}</span>}
             </button>
           );})()}
+          {/* Kampagnen & Ideen */}
+          {(()=>{const isActive=activeId===CAMPAIGNS_VIEW;const count=(state.campaigns||[]).length;return(
+            <button onClick={()=>setActiveId(CAMPAIGNS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>💡</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Kampagnen & Ideen</span>
+              {count>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
+            </button>
+          );})()}
           {/* Tokens */}
           {(()=>{const isActive=activeId===TOKENS_VIEW;const count=(state.tokens||[]).length;return(
             <button onClick={()=>setActiveId(TOKENS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
@@ -6317,6 +6689,17 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             </div>
           </div>
           <TokensView tokens={state.tokens||[]} onUpdate={tokens=>upd({tokens})}/>
+        </>) : activeId === CAMPAIGNS_VIEW ? (<>
+          <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+            <div style={{flex:1}}>
+              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>💡 Kampagnen & Ideen</h1>
+              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>{(state.campaigns||[]).length} Kampagnen · {(state.campaigns||[]).reduce((s,c)=>s+(c.files||[]).length,0)} Dateien</div>
+            </div>
+          </div>
+          <CampaignsView
+            campaigns={state.campaigns||[]}
+            onUpdate={campaigns=>upd({campaigns})}
+          />
         </>) : activeId === INVOICES_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
             <div style={{flex:1}}>
@@ -6345,6 +6728,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             onMarkPaid={id=>upd({invoices:(state.invoices||[]).map(i=>i.id===id?{...i,status:'bezahlt',paidAt:new Date().toISOString().slice(0,10)}:i)})}
             onDuplicate={inv=>{const settings=state.invoiceSettings||DEFAULT_INVOICE_SETTINGS;const duped={...inv,id:uid(),number:nextInvoiceNumber(settings),createdAt:new Date().toISOString(),status:'entwurf',paidAt:null};upd({invoices:[...(state.invoices||[]),duped],invoiceSettings:{...settings,invoiceCounter:(settings.invoiceCounter||1)+1}});}}
             onImport={()=>setModal('importInvoice')}
+            onMahnung={inv=>setMahnungInvoice(inv)}
           />
         </>) : (<>
         <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
@@ -6476,6 +6860,12 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
       settings={state.quoteSettings}
       invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS}
       onClose={()=>setPreviewInvoice(null)}
+    />}
+    {mahnungInvoice && <MahnungPreview
+      invoice={mahnungInvoice}
+      settings={state.quoteSettings}
+      onSave={inv=>{upd({invoices:(state.invoices||[]).map(i=>i.id===inv.id?inv:i)});setMahnungInvoice(inv);}}
+      onClose={()=>setMahnungInvoice(null)}
     />}
   </>);
 }
