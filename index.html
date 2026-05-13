@@ -1563,7 +1563,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setBusy(false);
   };
 
-  const save = async () => {
+  const save = async (forceOverwrite = false) => {
     setErr(''); setInfo(''); setBusy(true);
     try {
       await ghValidateAccess(token.trim(), repo.trim());
@@ -1581,7 +1581,16 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
           onSaved && onSaved(decrypted);
           return;
         } catch(e) {
-          setErr('Daten auf dem Server können mit deinem Passwort nicht entschlüsselt werden. Stimmt das Passwort?');
+          if (forceOverwrite) {
+            // User chose to overwrite — connect anyway, old blob will be replaced on next save/import
+            await saveGithubSettings(cryptoKey, settings);
+            _ghSha = String(fetched.sha || '');
+            setInfo('✓ Verbunden — alte Server-Daten werden beim nächsten Speichern überschrieben.');
+            onSaved && onSaved(null);
+            return;
+          }
+          setErr('Daten auf dem Server können mit deinem Passwort nicht entschlüsselt werden. Falls die alten Server-Daten verloren sind und du sie überschreiben willst, klick unten "Trotzdem verbinden".');
+          setStep('decryptFail');
           setBusy(false); return;
         }
       } else {
@@ -1837,9 +1846,15 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
           ) : <div></div>}
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-ghost" onClick={test} disabled={busy||!token||(SELF_HOSTED?false:!repo)}>Verbindung testen</button>
-            <button className="btn btn-primary" onClick={save} disabled={busy||!token||(SELF_HOSTED?false:!repo||!path)}>
-              {busy?'…':isUpdate?'Speichern':'Verbinden'}
-            </button>
+            {step==='decryptFail' ? (
+              <button className="btn btn-primary" onClick={()=>{setStep('form');save(true);}} disabled={busy} style={{background:'#DC2626'}}>
+                {busy?'…':'⚠ Trotzdem verbinden (überschreiben)'}
+              </button>
+            ) : (
+              <button className="btn btn-primary" onClick={()=>save(false)} disabled={busy||!token||(SELF_HOSTED?false:!repo||!path)}>
+                {busy?'…':isUpdate?'Speichern':'Verbinden'}
+              </button>
+            )}
           </div>
         </div>
 
