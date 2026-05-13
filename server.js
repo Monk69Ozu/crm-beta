@@ -155,6 +155,24 @@ app.get('/api/validate', requireAuth, (_req, res) => {
   res.json({ ok: true });
 });
 
+// ── Diagnostic endpoint (does NOT leak the secret) ───────────────
+app.get('/api/debug-auth', (req, res) => {
+  const auth  = (req.headers.authorization || '').trim();
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : auth;
+  res.json({
+    receivedTokenLength: token.length,
+    expectedSecretLength: API_SECRET.length,
+    match: token === API_SECRET,
+    // First/last char codes — helps spot wrapping quotes, hidden whitespace, etc.
+    receivedFirstCharCode: token.length ? token.charCodeAt(0) : null,
+    receivedLastCharCode:  token.length ? token.charCodeAt(token.length - 1) : null,
+    expectedFirstCharCode: API_SECRET.length ? API_SECRET.charCodeAt(0) : null,
+    expectedLastCharCode:  API_SECRET.length ? API_SECRET.charCodeAt(API_SECRET.length - 1) : null,
+    authHeaderStartsWithBearer: auth.startsWith('Bearer '),
+    rawHeaderLength: (req.headers.authorization || '').length,
+  });
+});
+
 // ── CRM data (encrypted blob) ────────────────────────────────────
 app.get('/api/data', requireAuth, async (_req, res) => {
   try {
