@@ -6962,12 +6962,12 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               setEditingInvoice(inv);
               upd({invoiceSettings:{...(state.invoiceSettings||DEFAULT_INVOICE_SETTINGS),invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1}});
             }}
-            onOpen={inv=>setEditingInvoice(inv)}
+            onOpen={inv=>setEditingInvoice(inv.status==='ueberfaellig'?{...inv,status:'offen'}:inv)}
             onDelete={id=>upd({invoices:(state.invoices||[]).filter(i=>i.id!==id)})}
             onMarkPaid={id=>upd({invoices:(state.invoices||[]).map(i=>i.id===id?{...i,status:'bezahlt',paidAt:new Date().toISOString().slice(0,10)}:i)})}
             onDuplicate={inv=>{const settings=state.invoiceSettings||DEFAULT_INVOICE_SETTINGS;const duped={...inv,id:uid(),number:nextInvoiceNumber(settings),createdAt:new Date().toISOString(),status:'entwurf',paidAt:null,mahnungen:[]};upd({invoices:[...(state.invoices||[]),duped],invoiceSettings:{...settings,invoiceCounter:(settings.invoiceCounter||1)+1}});}}
             onImport={()=>setModal('importInvoice')}
-            onMahnung={inv=>setMahnungInvoice(inv)}
+            onMahnung={inv=>setMahnungInvoice(inv.status==='ueberfaellig'?{...inv,status:'offen'}:inv)}
           />
         </>) : (<>
         <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
