@@ -503,12 +503,15 @@ function buildCrmSummary(state) {
     updatedAt: new Date().toISOString(),
     contacts: (state.contacts||[]).map(c=>({
       id:      c.id,
-      name:    c.fields?.ansprechpartner||'',
+      name:    c.ansprechpartner||'',
       company: c.firma||'',
-      email:   c.fields?.email||'',
-      phone:   c.fields?.telefon||'',
-      address: [c.fields?.address,c.fields?.zip,c.fields?.city,c.fields?.country].filter(Boolean).join(', '),
-      taxId:   c.fields?.taxId||'',
+      email:   c.email||'',
+      phone:   c.telefon||'',
+      status:  c.status||'',
+      address: [c.address,c.zip,c.city,c.country].filter(Boolean).join(', '),
+      taxId:   c.taxId||'',
+      umsatz:  c.umsatz||'',
+      notizen: c.notizen||'',
     })),
     invoices: (state.invoices||[]).map(inv=>({
       id:          inv.id,
@@ -541,7 +544,13 @@ function buildCrmSummary(state) {
       createdAt:   t.createdAt||'',
       doneAt:      t.doneAt||'',
     })),
-    notes: [],
+    campaigns: (state.campaigns||[]).map(c=>({
+      id:        c.id,
+      name:      c.name||'',
+      color:     c.color||'',
+      fileCount: (c.files||[]).length,
+      files:     (c.files||[]).map(f=>({id:f.id,name:f.name,updatedAt:f.updatedAt||''})),
+    })),
     employees: (state.aiEmployees||[]).map(e=>({
       id:      e.id,
       name:    e.name||'',
@@ -2137,7 +2146,7 @@ function ConfirmModal({text,onConfirm,onCancel}){
 
 function ContactModal({contact,sections,customFields,onSave,onClose}){
   const isEdit=!!contact;
-  const [form,setForm]=useState(contact?{...contact}:{firma:'',email:'',telefon:'',status:'Aktiv',notizen:'',umsatz:'',sectionId:sections[0]?.id||'',reminders:[],activities:[],customValues:{}});
+  const [form,setForm]=useState(contact?{...contact}:{firma:'',ansprechpartner:'',email:'',telefon:'',address:'',zip:'',city:'',country:'',taxId:'',status:'Aktiv',notizen:'',umsatz:'',sectionId:sections[0]?.id||'',reminders:[],activities:[],customValues:{}});
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
   const setCV=(k,v)=>setForm(f=>({...f,customValues:{...f.customValues,[k]:v}}));
   const relevant=customFields.filter(cf=>!cf.sectionId||cf.sectionId===form.sectionId);
