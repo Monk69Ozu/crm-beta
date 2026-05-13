@@ -4938,7 +4938,6 @@ function InvoiceImportModal({contacts, invoiceSettings, quoteSettings, onImport,
 
   const handleFile=async(file)=>{
     if(!file){setParseErr('Keine Datei ausgewählt.');return;}
-    console.log('[Import] handleFile start:',file.name,file.type,file.size);
     setParsing(true);setParseErr('');setParsed(false);setRawText('');setShowRaw(false);
     const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
     const isHtml=file.type==='text/html'||/\.html?$/i.test(file.name);
@@ -4974,7 +4973,6 @@ function InvoiceImportModal({contacts, invoiceSettings, quoteSettings, onImport,
       setForm(f=>({...blank,...parsedData,status:f.status}));
       setParsed(true);
     }catch(e){
-      console.error('[Import] Fehler:',e);
       setParseErr('Fehler: '+(e.message||e.toString()));
       setRawText(rt=>rt||(('[Fehler]\n'+e.message)));
     }
@@ -5338,11 +5336,11 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
                       onMouseLeave={e=>{e.currentTarget.style.borderColor=accent+'44';e.currentTarget.style.background='#FAFAF8';}}
                       onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=accent;}}
                       onDragLeave={e=>{e.currentTarget.style.borderColor=accent+'44';}}
-                      onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&f.type.startsWith('image/')){const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}>
-                      <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}/>
+                      onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&f.type.startsWith('image/')){if(f.size>2*1024*1024){alert('Bild ist zu groß (max. 2 MB).');return;}const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}>
+                      <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f){if(f.size>2*1024*1024){alert('Bild ist zu groß (max. 2 MB). Bitte ein kleineres Bild verwenden.');return;}const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}/>
                       <span style={{fontSize:36,lineHeight:1}}>🖼</span>
                       <div style={{fontSize:14,fontWeight:600,color:'#6B6560'}}>Bild hochladen oder hierher ziehen</div>
-                      <div style={{fontSize:12,color:'#C8C3BD'}}>JPG, PNG, GIF, WebP</div>
+                      <div style={{fontSize:12,color:'#C8C3BD'}}>JPG, PNG, GIF, WebP · max. 2 MB</div>
                       <div style={{display:'flex',gap:6,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
                         <input placeholder="https://… Bild-URL" style={{fontSize:13,padding:'7px 12px',borderRadius:8,border:'1.5px solid #E5E1DC',width:250}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){updB(block.id,{content:e.target.value.trim()});}}}/>
                         <span style={{fontSize:11,color:'#C8C3BD'}}>↵ Enter</span>
@@ -6616,7 +6614,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     const fresh=await ghCheckForUpdates(cryptoKey);
     if(fresh){
       skipNextSaveRef.current=true;
-      setState(s=>({...fresh, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[]}));
+      setState(s=>({...fresh, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[]}));
       return true;
     }
     return false;
@@ -6625,11 +6623,13 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     if(!cloudConnected)return;
     const iv=setInterval(refreshFromCloud,30000);
     const onFocus = () => { refreshFromCloud(); };
+    const onVisibility = () => { if(!document.hidden) refreshFromCloud(); };
     window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', () => { if(!document.hidden) refreshFromCloud(); });
+    document.addEventListener('visibilitychange', onVisibility);
     return ()=>{
       clearInterval(iv);
       window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   },[cloudConnected,cryptoKey]);
 
@@ -7025,7 +7025,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
         if (existingData) {
           // Loaded from GitHub — overwrite local state
           skipNextSaveRef.current=true;
-          setState({...existingData, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[]});
+          setState({...existingData, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[], campaigns:existingData.campaigns||[]});
         } else {
           // No remote yet — push current local state
           await saveEncrypted(cryptoKey, state);
@@ -7079,7 +7079,8 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
       onCreateContact={c=>upd({contacts:[...state.contacts,c]})}
       onSave={inv=>{
         const exists=(state.invoices||[]).find(i=>i.id===inv.id);
-        upd({invoices:exists?(state.invoices||[]).map(i=>i.id===inv.id?inv:i):[...(state.invoices||[]),inv]});
+        const saved={...inv, paidAt: inv.status==='bezahlt' ? (inv.paidAt||new Date().toISOString().slice(0,10)) : (inv.status==='storniert'?inv.paidAt:null)};
+        upd({invoices:exists?(state.invoices||[]).map(i=>i.id===inv.id?saved:i):[...(state.invoices||[]),saved]});
         setEditingInvoice(null);
       }}
       onPreview={inv=>{setEditingInvoice(null);setPreviewInvoice(inv);}}
