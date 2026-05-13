@@ -3625,7 +3625,7 @@ function QuoteEditor({quote, contacts, settings, onSave, onClose, onPreview}){
           <div style={{flex:1}}>
             <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
               <h2 style={{fontSize:18,fontWeight:700,letterSpacing:'-0.01em'}}>Angebot {q.number}</h2>
-              <select value={q.status} onChange={e=>u('status',e.target.value)} style={{width:'auto',padding:'4px 8px',fontSize:11.5,fontWeight:600,background:'#F5F3F0',border:'1.5px solid transparent'}}>
+              <select value={q.status} onChange={e=>{const s=e.target.value;setQ(p=>({...p,status:s,sentAt:s==='gesendet'&&!p.sentAt?new Date().toISOString():p.sentAt}));}} style={{width:'auto',padding:'4px 8px',fontSize:11.5,fontWeight:600,background:'#F5F3F0',border:'1.5px solid transparent'}}>
                 {QUOTE_STATUSES.map(st=><option key={st.key} value={st.key}>{st.label}</option>)}
               </select>
             </div>
@@ -6675,7 +6675,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const saveContact=contact=>{const ex=state.contacts.find(c=>c.id===contact.id);upd({contacts:ex?state.contacts.map(c=>c.id===contact.id?contact:c):[...state.contacts,contact]});if(selected?.id===contact.id)setSelected(contact);setModal(null);};
   const deleteContact=()=>{upd({contacts:state.contacts.filter(c=>c.id!==selected.id)});setModal(null);setSelected(null);};
   const moveContact=(cId,toId)=>{upd({contacts:state.contacts.map(c=>c.id===cId?{...c,sectionId:toId}:c)});setModal(null);setSelected(null);};
-  const exportCSV=()=>{const cols=['Firma','E-Mail','Telefon','Status','Umsatz','Notizen'];const rows=state.contacts.filter(c=>c.sectionId===activeId).map(c=>[c.firma,c.email,c.telefon,c.status,c.umsatz,c.notizen].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));const csv=[cols.join(','),...rows].join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`${section?.name||'export'}.csv`;a.click();};
+  const exportCSV=()=>{const sectionCFs=(state.customFields||[]).filter(cf=>!cf.sectionId||cf.sectionId===activeId);const cols=['Firma','E-Mail','Telefon','Status','Umsatz','Notizen',...sectionCFs.map(cf=>cf.label)];const esc=v=>`"${String(v||'').replace(/"/g,'""')}"`;const rows=state.contacts.filter(c=>c.sectionId===activeId).map(c=>[c.firma,c.email,c.telefon,c.status,c.umsatz,c.notizen,...sectionCFs.map(cf=>c.customValues?.[cf.id]||'')].map(esc).join(','));const csv=[cols.join(','),...rows].join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'}));a.download=`${section?.name||'export'}.csv`;a.click();};
 
   return(<>
     {locked&&<LockOverlay onUnlock={(key,data)=>{setState(data);setLocked(false);lastActivityRef.current=Date.now();}}/>}
@@ -6956,7 +6956,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             onOpen={inv=>setEditingInvoice(inv)}
             onDelete={id=>upd({invoices:(state.invoices||[]).filter(i=>i.id!==id)})}
             onMarkPaid={id=>upd({invoices:(state.invoices||[]).map(i=>i.id===id?{...i,status:'bezahlt',paidAt:new Date().toISOString().slice(0,10)}:i)})}
-            onDuplicate={inv=>{const settings=state.invoiceSettings||DEFAULT_INVOICE_SETTINGS;const duped={...inv,id:uid(),number:nextInvoiceNumber(settings),createdAt:new Date().toISOString(),status:'entwurf',paidAt:null};upd({invoices:[...(state.invoices||[]),duped],invoiceSettings:{...settings,invoiceCounter:(settings.invoiceCounter||1)+1}});}}
+            onDuplicate={inv=>{const settings=state.invoiceSettings||DEFAULT_INVOICE_SETTINGS;const duped={...inv,id:uid(),number:nextInvoiceNumber(settings),createdAt:new Date().toISOString(),status:'entwurf',paidAt:null,mahnungen:[]};upd({invoices:[...(state.invoices||[]),duped],invoiceSettings:{...settings,invoiceCounter:(settings.invoiceCounter||1)+1}});}}
             onImport={()=>setModal('importInvoice')}
             onMahnung={inv=>setMahnungInvoice(inv)}
           />
