@@ -1150,7 +1150,7 @@ function AuthScreen({mode, onDone, onReset, onSwitchMode, prefilledInvite}) {
         if (!parsed) { doShake('Ungültiger Einladungs-Token.'); setBusy(false); return; }
         masterKeyB64 = parsed.masterKeyB64;
         importedGhSettings = parsed.ghSettings;
-      } else if (trimmed !== OWNER_EMAIL.toLowerCase()) {
+      } else if (!SELF_HOSTED && trimmed !== OWNER_EMAIL.toLowerCase()) {
         doShake('Du benötigst einen Einladungs-Token vom Team-Owner.');
         setBusy(false); return;
       }
@@ -1788,9 +1788,42 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                 </div>
               </div>
             </div>
-            <div style={{display:'flex',gap:8,marginBottom:10}}>
+            <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
               <button className="btn btn-ghost btn-sm" onClick={downloadCurrentBackup} disabled={backupBusy}>↓ Backup jetzt herunterladen</button>
               <button className="btn btn-ghost btn-sm" onClick={loadServerBackups} disabled={backupBusy}>{backupBusy?'…':'Verlauf anzeigen'}</button>
+              {SELF_HOSTED && (
+                <label className="btn btn-ghost btn-sm" style={{cursor:'pointer'}}>
+                  ↑ Backup-Datei importieren
+                  <input type="file" accept=".json,application/json" style={{display:'none'}} onChange={async (ev)=>{
+                    const file = ev.target.files && ev.target.files[0];
+                    if(!file) return;
+                    setBackupErr(''); setBackupInfo(''); setBackupBusy(true);
+                    try {
+                      const text = await file.text();
+                      let parsed;
+                      try { parsed = JSON.parse(text); } catch(e){ throw new Error('Ungültiges JSON-Format.'); }
+                      const encryptedData = parsed.encryptedData || parsed; // accept raw or wrapped
+                      if(!encryptedData || typeof encryptedData !== 'object') throw new Error('Datei enthält kein "encryptedData" Feld.');
+                      // Sanity check: must decrypt with current key
+                      try { await aesDecrypt(cryptoKey, encryptedData); }
+                      catch(e){ throw new Error('Backup kann mit deinem Passwort nicht entschlüsselt werden. Stimmt das Passwort?'); }
+                      // Push directly to /api/import
+                      const r = await fetch('/api/import', {
+                        method: 'POST',
+                        headers: {Authorization:`Bearer ${currentSettings.token}`,'Content-Type':'application/json'},
+                        body: JSON.stringify({encryptedData})
+                      });
+                      if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(`Import fehlgeschlagen: ${e.error||r.status}`); }
+                      const j = await r.json();
+                      _ghSha = String(j.version);
+                      localStorage.setItem(GH_SHA_KEY, _ghSha);
+                      setBackupInfo('✓ Import erfolgreich — bitte Seite neu laden.');
+                    } catch(e){ setBackupErr(e.message); }
+                    setBackupBusy(false);
+                    ev.target.value = '';
+                  }} disabled={backupBusy}/>
+                </label>
+              )}
             </div>
             {backupInfo && <div style={{fontSize:12,color:'#16a34a',padding:'7px 11px',background:'#F0FDF4',borderRadius:7,marginBottom:8,border:'1px solid #BBF7D0'}}>{backupInfo}</div>}
             {backupErr && <div style={{fontSize:12,color:'#9A3412',padding:'7px 11px',background:'#FFF7ED',borderRadius:7,marginBottom:8,border:'1px solid #FED7AA'}}>{backupErr}</div>}
