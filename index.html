@@ -1595,27 +1595,80 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupErr, setBackupErr] = useState('');
   const [backupInfo, setBackupInfo] = useState('');
-  const [migratePending, setMigratePending] = useState(null); // encryptedData from backup when key mismatch
+  const [migratePending, setMigratePending] = useState(null); // {encryptedData, exportSalt?, encryptedMasterKey?}
   const [migrateOldPw, setMigrateOldPw] = useState('');
   const [migrateOldData, setMigrateOldData] = useState('');
   const [migrateBusy, setMigrateBusy] = useState(false);
+  // Migration export (old CRM → new CRM)
+  const [showMigExport, setShowMigExport] = useState(false);
+  const [migExportPw, setMigExportPw] = useState('');
+  const [migExportBusy, setMigExportBusy] = useState(false);
+
+  const doMigrationExport = async () => {
+    setBackupErr(''); setMigExportBusy(true);
+    try {
+      const key = await verifyPassword(migExportPw);
+      if(!key){ setBackupErr('Falsches Passwort.'); setMigExportBusy(false); return; }
+      const masterKeyB64 = await exportMasterKeyB64(key);
+      const exportSalt = crypto.getRandomValues(new Uint8Array(16));
+      const exportWrapKey = await deriveKey(migExportPw, exportSalt);
+      const encryptedMasterKey = await aesEncrypt(exportWrapKey, masterKeyB64);
+      // Get raw encrypted data blob
+      let encryptedData = null;
+      if(_ghSettings){
+        try{
+          const fetched = await ghFetchFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path);
+          encryptedData = fetched.content;
+        }catch(e){}
+      }
+      if(!encryptedData){
+        const raw = localStorage.getItem(DATA_KEY);
+        if(raw) encryptedData = JSON.parse(raw);
+      }
+      if(!encryptedData) throw new Error('Keine lokalen Daten gefunden. Bitte zuerst einmal synchronisieren.');
+      const payload = {
+        version:2, migrationExport:true, savedAt:new Date().toISOString(),
+        exportSalt:toB64(exportSalt), encryptedMasterKey, encryptedData
+      };
+      const blob = new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href=url; a.download=`webars-crm-migration-${new Date().toISOString().slice(0,10)}.json`; a.click();
+      URL.revokeObjectURL(url);
+      setShowMigExport(false); setMigExportPw('');
+      setBackupInfo('✓ Migration-Export heruntergeladen.');
+    }catch(e){ setBackupErr(e.message); }
+    setMigExportBusy(false);
+  };
 
   const doMigrateImport = async () => {
     setBackupErr(''); setMigrateBusy(true);
     try {
-      let parsed;
-      try { parsed = JSON.parse(migrateOldData.trim()); } catch(e) { throw new Error('Ungültiges JSON — bitte exakt so einfügen wie aus der Konsole.'); }
-      const { s, m } = parsed;
-      if (!s || !m) throw new Error('Fehlende Felder: "s" (salt) oder "m" (master key) nicht gefunden.');
-      const oldSalt = fromB64(s);
-      const oldWrapKey = await deriveKey(migrateOldPw, oldSalt);
-      let oldMasterKeyB64;
-      try { oldMasterKeyB64 = await aesDecrypt(oldWrapKey, JSON.parse(m)); }
-      catch(e) { throw new Error('Altes Passwort falsch oder Daten ungültig.'); }
-      const oldMasterKey = await importMasterKeyFromB64(oldMasterKeyB64);
+      const isV2 = !!(migratePending.exportSalt && migratePending.encryptedMasterKey);
+      let oldMasterKey;
+      if(isV2){
+        // V2: derive key directly from password + exportSalt embedded in file
+        const exportSalt = fromB64(migratePending.exportSalt);
+        const exportWrapKey = await deriveKey(migrateOldPw, exportSalt);
+        let oldMasterKeyB64;
+        try { oldMasterKeyB64 = await aesDecrypt(exportWrapKey, migratePending.encryptedMasterKey); }
+        catch(e){ throw new Error('Altes Passwort falsch.'); }
+        oldMasterKey = await importMasterKeyFromB64(oldMasterKeyB64);
+      } else {
+        // V1 fallback: user provides localStorage data manually
+        let parsed;
+        try { parsed = JSON.parse(migrateOldData.trim()); } catch(e) { throw new Error('Ungültiges JSON — bitte exakt so einfügen wie aus der Konsole.'); }
+        const { s, m } = parsed;
+        if(!s || !m) throw new Error('Fehlende Felder: "s" (salt) oder "m" (master key) nicht gefunden.');
+        const oldWrapKey = await deriveKey(migrateOldPw, fromB64(s));
+        let oldMasterKeyB64;
+        try { oldMasterKeyB64 = await aesDecrypt(oldWrapKey, JSON.parse(m)); }
+        catch(e){ throw new Error('Altes Passwort falsch oder Daten ungültig.'); }
+        oldMasterKey = await importMasterKeyFromB64(oldMasterKeyB64);
+      }
       let data;
-      try { data = await aesDecrypt(oldMasterKey, migratePending); }
-      catch(e) { throw new Error('Entschlüsselung mit altem Key fehlgeschlagen — stimmt der Browser-Tab?'); }
+      try { data = await aesDecrypt(oldMasterKey, migratePending.encryptedData); }
+      catch(e){ throw new Error('Entschlüsselung fehlgeschlagen — stimmt das Passwort?'); }
       const newEncryptedData = await aesEncrypt(cryptoKey, data);
       const r = await fetch('/api/import', {
         method:'POST',
@@ -1827,6 +1880,9 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
               <button className="btn btn-ghost btn-sm" onClick={downloadCurrentBackup} disabled={backupBusy}>↓ Backup jetzt herunterladen</button>
               <button className="btn btn-ghost btn-sm" onClick={loadServerBackups} disabled={backupBusy}>{backupBusy?'…':'Verlauf anzeigen'}</button>
+              {!SELF_HOSTED && (
+                <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(v=>!v);setMigExportPw('');setBackupErr('');}} disabled={backupBusy}>📦 Migration-Export</button>
+              )}
               {SELF_HOSTED && (
                 <label className="btn btn-ghost btn-sm" style={{cursor:'pointer'}}>
                   ↑ Backup-Datei importieren
@@ -1838,14 +1894,23 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                       const text = await file.text();
                       let parsed;
                       try { parsed = JSON.parse(text); } catch(e){ throw new Error('Ungültiges JSON-Format.'); }
+                      // V2 migration export (has embedded key info)
+                      if(parsed.migrationExport && parsed.exportSalt && parsed.encryptedMasterKey && parsed.encryptedData){
+                        setMigratePending({
+                          encryptedData: parsed.encryptedData,
+                          exportSalt: parsed.exportSalt,
+                          encryptedMasterKey: parsed.encryptedMasterKey
+                        });
+                        setBackupErr(''); setBackupBusy(false); ev.target.value=''; return;
+                      }
                       const encryptedData = parsed.encryptedData || parsed; // accept raw or wrapped
                       if(!encryptedData || typeof encryptedData !== 'object') throw new Error('Datei enthält kein "encryptedData" Feld.');
                       // Sanity check: try to decrypt with current key
                       let canDecrypt = false;
                       try { await aesDecrypt(cryptoKey, encryptedData); canDecrypt = true; } catch(e){}
                       if(!canDecrypt){
-                        // Key mismatch — trigger migration flow
-                        setMigratePending(encryptedData);
+                        // Key mismatch — trigger v1 migration flow
+                        setMigratePending({encryptedData});
                         setBackupErr('');
                         setBackupBusy(false);
                         ev.target.value = '';
@@ -1869,35 +1934,71 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                 </label>
               )}
             </div>
+            {!SELF_HOSTED && showMigExport && (
+              <div style={{background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:10,padding:14,marginBottom:10}}>
+                <div style={{fontWeight:700,fontSize:13,color:'#0C4A6E',marginBottom:6}}>📦 Migration-Export erstellen</div>
+                <div style={{fontSize:12,color:'#075985',marginBottom:10,lineHeight:1.6}}>
+                  Erstellt eine Backup-Datei mit eingebettetem Schlüssel. Im neuen Self-Hosted CRM kannst du diese Datei importieren — du brauchst nur dein altes Passwort.
+                </div>
+                <input type="password" placeholder="Dein aktuelles Passwort" value={migExportPw} onChange={e=>setMigExportPw(e.target.value)}
+                  style={{width:'100%',fontSize:13,padding:'8px 10px',borderRadius:7,border:'1px solid #BAE6FD',background:'#F8FBFF',marginBottom:10,boxSizing:'border-box'}}
+                  autoFocus onKeyDown={e=>e.key==='Enter'&&doMigrationExport()}
+                />
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn btn-primary btn-sm" onClick={doMigrationExport} disabled={migExportBusy||!migExportPw}>
+                    {migExportBusy?'Erstelle…':'↓ Export herunterladen'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(false);setMigExportPw('');setBackupErr('');}}>Abbrechen</button>
+                </div>
+              </div>
+            )}
             {backupInfo && <div style={{fontSize:12,color:'#16a34a',padding:'7px 11px',background:'#F0FDF4',borderRadius:7,marginBottom:8,border:'1px solid #BBF7D0'}}>{backupInfo}</div>}
             {backupErr && <div style={{fontSize:12,color:'#9A3412',padding:'7px 11px',background:'#FFF7ED',borderRadius:7,marginBottom:8,border:'1px solid #FED7AA'}}>{backupErr}</div>}
             {migratePending && (
               <div style={{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:10,padding:16,marginBottom:10}}>
-                <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:8}}>⚠️ Backup mit anderem Passwort erstellt</div>
-                <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
-                  Das Backup wurde in einem anderen CRM-Konto verschlüsselt.<br/>
-                  <strong>Schritt 1:</strong> Öffne dein <strong>altes CRM</strong> in einem Browser-Tab (wo du noch eingeloggt bist) und öffne die DevTools-Konsole <code style={{background:'rgba(0,0,0,0.08)',padding:'1px 5px',borderRadius:4}}>F12</code> → Konsole.<br/>
-                  <strong>Schritt 2:</strong> Führe diesen Befehl aus und kopiere das Ergebnis:
-                </div>
-                <div style={{background:'#1E1B18',color:'#E2DDD8',fontFamily:'monospace',fontSize:11.5,padding:'10px 13px',borderRadius:8,marginBottom:12,userSelect:'all',wordBreak:'break-all'}}>
-                  JSON.stringify(&#123;s:localStorage.getItem('webars_salt'),m:localStorage.getItem('webars_master_v1')&#125;)
-                </div>
-                <textarea
-                  placeholder='Ergebnis hier einfügen (z.B. {"s":"...","m":"..."})'
-                  value={migrateOldData} onChange={e=>setMigrateOldData(e.target.value)}
-                  rows={3} style={{width:'100%',fontSize:12,fontFamily:'monospace',padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:8,boxSizing:'border-box',resize:'vertical'}}
-                />
-                <div style={{fontSize:11.5,color:'#78350F',marginBottom:6,fontWeight:600}}>Altes Passwort:</div>
-                <input type="password" placeholder="Passwort des alten CRM-Kontos" value={migrateOldPw} onChange={e=>setMigrateOldPw(e.target.value)}
-                  style={{width:'100%',fontSize:13,padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:10,boxSizing:'border-box'}}
-                  onKeyDown={e=>e.key==='Enter'&&doMigrateImport()}
-                />
-                <div style={{display:'flex',gap:8}}>
-                  <button className="btn btn-primary btn-sm" onClick={doMigrateImport} disabled={migrateBusy||!migrateOldPw||!migrateOldData.trim()}>
-                    {migrateBusy?'Importiere…':'✓ Importieren'}
-                  </button>
-                  <button className="btn btn-ghost btn-sm" onClick={()=>{setMigratePending(null);setMigrateOldPw('');setMigrateOldData('');setBackupErr('');}}>Abbrechen</button>
-                </div>
+                <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:8}}>🔑 Altes Passwort erforderlich</div>
+                {migratePending.exportSalt ? (
+                  // V2: simple password-only flow
+                  <>
+                    <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
+                      Migration-Export erkannt. Gib dein <strong>altes CRM-Passwort</strong> ein — die Daten werden automatisch in dein neues Konto übernommen.
+                    </div>
+                    <input type="password" placeholder="Altes Passwort" value={migrateOldPw} onChange={e=>setMigrateOldPw(e.target.value)}
+                      style={{width:'100%',fontSize:13,padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:10,boxSizing:'border-box'}}
+                      autoFocus onKeyDown={e=>e.key==='Enter'&&doMigrateImport()}
+                    />
+                    <div style={{display:'flex',gap:8}}>
+                      <button className="btn btn-primary btn-sm" onClick={doMigrateImport} disabled={migrateBusy||!migrateOldPw}>
+                        {migrateBusy?'Importiere…':'✓ Importieren'}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>{setMigratePending(null);setMigrateOldPw('');setBackupErr('');}}>Abbrechen</button>
+                    </div>
+                  </>
+                ) : (
+                  // V1 fallback: need localStorage data
+                  <>
+                    <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
+                      Dieses Backup hat kein eingebettetes Key-Export. Bitte erstelle im alten CRM einen <strong>Migration-Export</strong> (Einstellungen → Backup → 📦 Migration-Export). Falls das nicht möglich ist:<br/><br/>
+                      Öffne das alte CRM, drücke <code style={{background:'rgba(0,0,0,0.08)',padding:'1px 4px',borderRadius:3}}>F12</code> → Konsole → ausführen:
+                    </div>
+                    <div style={{background:'#1E1B18',color:'#E2DDD8',fontFamily:'monospace',fontSize:11.5,padding:'10px 13px',borderRadius:8,marginBottom:10,userSelect:'all',wordBreak:'break-all'}}>
+                      JSON.stringify(&#123;s:localStorage.getItem('webars_salt'),m:localStorage.getItem('webars_master_v1')&#125;)
+                    </div>
+                    <textarea placeholder='Ergebnis hier einfügen…' value={migrateOldData} onChange={e=>setMigrateOldData(e.target.value)}
+                      rows={3} style={{width:'100%',fontSize:12,fontFamily:'monospace',padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:8,boxSizing:'border-box',resize:'vertical'}}
+                    />
+                    <input type="password" placeholder="Altes Passwort" value={migrateOldPw} onChange={e=>setMigrateOldPw(e.target.value)}
+                      style={{width:'100%',fontSize:13,padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:10,boxSizing:'border-box'}}
+                      onKeyDown={e=>e.key==='Enter'&&doMigrateImport()}
+                    />
+                    <div style={{display:'flex',gap:8}}>
+                      <button className="btn btn-primary btn-sm" onClick={doMigrateImport} disabled={migrateBusy||!migrateOldPw||!migrateOldData.trim()}>
+                        {migrateBusy?'Importiere…':'✓ Importieren'}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>{setMigratePending(null);setMigrateOldPw('');setMigrateOldData('');setBackupErr('');}}>Abbrechen</button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
             {backups.length > 0 && (
