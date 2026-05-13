@@ -6683,7 +6683,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
 
   const saveContact=contact=>{const ex=state.contacts.find(c=>c.id===contact.id);upd({contacts:ex?state.contacts.map(c=>c.id===contact.id?contact:c):[...state.contacts,contact]});if(selected?.id===contact.id)setSelected(contact);setModal(null);};
   const deleteContact=()=>{upd({contacts:state.contacts.filter(c=>c.id!==selected.id)});setModal(null);setSelected(null);};
-  const moveContact=(cId,toId)=>{upd({contacts:state.contacts.map(c=>c.id===cId?{...c,sectionId:toId}:c)});setModal(null);setSelected(null);};
+  const moveContact=(cId,toId)=>{upd({contacts:state.contacts.map(c=>c.id===cId?{...c,sectionId:toId,subsectionId:null}:c)});setModal(null);setSelected(null);};
   const exportCSV=()=>{const sectionCFs=(state.customFields||[]).filter(cf=>!cf.sectionId||cf.sectionId===activeId);const cols=['Firma','E-Mail','Telefon','Status','Umsatz','Notizen',...sectionCFs.map(cf=>cf.label)];const esc=v=>`"${String(v||'').replace(/"/g,'""')}"`;const rows=state.contacts.filter(c=>c.sectionId===activeId).map(c=>[c.firma,c.email,c.telefon,c.status,c.umsatz,c.notizen,...sectionCFs.map(cf=>c.customValues?.[cf.id]||'')].map(esc).join(','));const csv=[cols.join(','),...rows].join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'}));a.download=`${section?.name||'export'}.csv`;a.click();};
 
   return(<>
