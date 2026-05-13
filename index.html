@@ -7034,7 +7034,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
         if (existingData) {
           // Loaded from GitHub — overwrite local state
           skipNextSaveRef.current=true;
-          setState({...existingData, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[], campaigns:existingData.campaigns||[]});
+          setState({...existingData, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, tokens:existingData.tokens||[], forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[], campaigns:existingData.campaigns||[]});
         } else {
           // No remote yet — push current local state
           await saveEncrypted(cryptoKey, state);
@@ -7104,7 +7104,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {mahnungInvoice && <MahnungPreview
       invoice={mahnungInvoice}
       settings={state.quoteSettings}
-      onSave={inv=>{upd({invoices:(state.invoices||[]).map(i=>i.id===inv.id?inv:i)});setMahnungInvoice(inv);}}
+      onSave={inv=>{upd({invoices:(state.invoices||[]).map(i=>i.id===inv.id?inv:i)});}}
       onClose={()=>setMahnungInvoice(null)}
     />}
   </>);
