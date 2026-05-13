@@ -1615,7 +1615,13 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
       const encryptedMasterKey = await aesEncrypt(exportWrapKey, masterKeyB64);
       // Get raw encrypted data blob
       let encryptedData = null;
-      if(_ghSettings){
+      if(SELF_HOSTED && currentSettings && currentSettings.token){
+        try{
+          const r = await fetch('/api/data',{headers:{Authorization:`Bearer ${currentSettings.token}`}});
+          if(r.ok){ const j=await r.json(); if(j.content) encryptedData=j.content; }
+        }catch(e){}
+      }
+      if(!encryptedData && _ghSettings){
         try{
           const fetched = await ghFetchFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path);
           encryptedData = fetched.content;
@@ -1625,7 +1631,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         const raw = localStorage.getItem(DATA_KEY);
         if(raw) encryptedData = JSON.parse(raw);
       }
-      if(!encryptedData) throw new Error('Keine lokalen Daten gefunden. Bitte zuerst einmal synchronisieren.');
+      if(!encryptedData) throw new Error('Keine Daten gefunden. Bitte zuerst Daten speichern.');
       const payload = {
         version:2, migrationExport:true, savedAt:new Date().toISOString(),
         exportSalt:toB64(exportSalt), encryptedMasterKey, encryptedData
@@ -1880,9 +1886,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
               <button className="btn btn-ghost btn-sm" onClick={downloadCurrentBackup} disabled={backupBusy}>↓ Backup jetzt herunterladen</button>
               <button className="btn btn-ghost btn-sm" onClick={loadServerBackups} disabled={backupBusy}>{backupBusy?'…':'Verlauf anzeigen'}</button>
-              {!SELF_HOSTED && (
-                <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(v=>!v);setMigExportPw('');setBackupErr('');}} disabled={backupBusy}>📦 Migration-Export</button>
-              )}
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(v=>!v);setMigExportPw('');setBackupErr('');}} disabled={backupBusy}>📦 Migration-Export</button>
               {SELF_HOSTED && (
                 <label className="btn btn-ghost btn-sm" style={{cursor:'pointer'}}>
                   ↑ Backup-Datei importieren
@@ -1934,7 +1938,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                 </label>
               )}
             </div>
-            {!SELF_HOSTED && showMigExport && (
+            {showMigExport && (
               <div style={{background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:10,padding:14,marginBottom:10}}>
                 <div style={{fontWeight:700,fontSize:13,color:'#0C4A6E',marginBottom:6}}>📦 Migration-Export erstellen</div>
                 <div style={{fontSize:12,color:'#075985',marginBottom:10,lineHeight:1.6}}>
