@@ -5235,6 +5235,233 @@ function InvoicesView({invoices, contacts, quoteSettings, invoiceSettings, quote
 // ══════════════════════════════════════════════════════════════════
 const CAMPAIGN_COLORS=['#6366f1','#ec4899','#f59e0b','#10b981','#3b82f6','#8b5cf6','#ef4444','#14b8a6'];
 const CAMPAIGN_EMOJIS=['💡','📢','🚀','🎯','📌','⚡','🔥','🌟','📝','🎨','💼','📊'];
+const BLOCK_DEFS=[
+  {type:'text',   icon:'¶',   label:'Text',          desc:'Normaler Absatz'},
+  {type:'h1',     icon:'H1',  label:'Überschrift 1', desc:'Große Überschrift'},
+  {type:'h2',     icon:'H2',  label:'Überschrift 2', desc:'Mittlere Überschrift'},
+  {type:'h3',     icon:'H3',  label:'Überschrift 3', desc:'Kleine Überschrift'},
+  {type:'bullet', icon:'•',   label:'Aufzählung',    desc:'Aufzählungspunkt'},
+  {type:'numbered',icon:'1.', label:'Nummeriert',    desc:'Nummerierte Liste'},
+  {type:'code',   icon:'</>',label:'Code-Snippet',   desc:'Code mit Syntax-Highlighting'},
+  {type:'image',  icon:'🖼',  label:'Bild',          desc:'Bild hochladen oder URL'},
+  {type:'divider',icon:'—',   label:'Trennlinie',    desc:'Horizontaler Strich'},
+];
+function newBlock(type='text'){return{id:uid(),type,content:'',language:'js',caption:''};}
+function parseBlocks(raw){
+  if(!raw)return[newBlock()];
+  try{const p=JSON.parse(raw);if(Array.isArray(p)&&p.length)return p;}catch{}
+  return[{id:uid(),type:'text',content:raw,language:'js',caption:''}];
+}
+
+function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
+  const accent=campColor||'#6366f1';
+  const [blocks,setBlocks]=useState(()=>parseBlocks(file.content));
+  const [editingName,setEditingName]=useState(false);
+  const [fileName,setFileName]=useState(file.name);
+  const [slashMenu,setSlashMenu]=useState(null);
+  const [addMenu,setAddMenu]=useState(null);
+  const [rowHover,setRowHover]=useState(null);
+  const timerRef=useRef(null);
+  const blockRefs=useRef({});
+
+  useEffect(()=>{setBlocks(parseBlocks(file.content));setFileName(file.name);setEditingName(false);},[file.id]);
+
+  const persist=useCallback(bl=>{clearTimeout(timerRef.current);timerRef.current=setTimeout(()=>onSaveContent(JSON.stringify(bl)),600);},[onSaveContent]);
+  const setB=bl=>{setBlocks(bl);persist(bl);};
+  const updB=(id,p)=>setB(blocks.map(b=>b.id===id?{...b,...p}:b));
+
+  const insertB=(afterId,type='text')=>{
+    const nb=newBlock(type);
+    const i=afterId===null?blocks.length:blocks.findIndex(b=>b.id===afterId)+1;
+    setB([...blocks.slice(0,i),nb,...blocks.slice(i)]);
+    setSlashMenu(null);setAddMenu(null);
+    setTimeout(()=>blockRefs.current[nb.id]?.focus(),40);
+  };
+  const delB=id=>{
+    if(blocks.length===1){updB(id,{content:''});return;}
+    const i=blocks.findIndex(b=>b.id===id);
+    const bl=blocks.filter(b=>b.id!==id);
+    setB(bl);
+    setTimeout(()=>blockRefs.current[bl[Math.max(0,i-1)]?.id]?.focus(),40);
+  };
+  const handleKey=(e,block)=>{
+    if(e.key==='Enter'&&!e.shiftKey&&block.type!=='code'){
+      e.preventDefault();
+      if(!block.content.trim()&&['bullet','numbered'].includes(block.type)){updB(block.id,{type:'text'});return;}
+      insertB(block.id,['bullet','numbered'].includes(block.type)?block.type:'text');
+    }
+    if(e.key==='Backspace'&&!block.content){
+      e.preventDefault();
+      if(block.type!=='text')updB(block.id,{type:'text'});else delB(block.id);
+    }
+    if(e.key==='Escape'){setSlashMenu(null);setAddMenu(null);}
+  };
+  const handleChange=(id,val)=>{
+    if(val.startsWith('/')&&!val.slice(1).includes(' '))setSlashMenu({blockId:id,query:val.slice(1)});
+    else if(slashMenu?.blockId===id)setSlashMenu(null);
+    updB(id,{content:val});
+    const el=blockRefs.current[id];if(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
+  };
+  const applySlash=(blockId,type)=>{
+    setB(blocks.map(b=>b.id!==blockId?b:{...b,type,content:'',language:'js'}));
+    setSlashMenu(null);setTimeout(()=>blockRefs.current[blockId]?.focus(),40);
+  };
+  const filteredDefs=slashMenu?BLOCK_DEFS.filter(d=>!slashMenu.query||d.label.toLowerCase().includes(slashMenu.query.toLowerCase())||d.type.startsWith(slashMenu.query.toLowerCase())):[];
+  const baseTA={width:'100%',boxSizing:'border-box',border:'none',outline:'none',resize:'none',background:'transparent',fontFamily:'inherit',overflow:'hidden',display:'block',padding:0};
+  const ts={text:{fontSize:15,lineHeight:1.85,color:'#1F1B17'},h1:{fontSize:28,fontWeight:800,lineHeight:1.25,color:'#141210',letterSpacing:'-0.025em'},h2:{fontSize:21,fontWeight:700,lineHeight:1.3,color:'#141210',letterSpacing:'-0.01em'},h3:{fontSize:17,fontWeight:700,lineHeight:1.4,color:'#141210'},bullet:{fontSize:15,lineHeight:1.85,color:'#1F1B17'},numbered:{fontSize:15,lineHeight:1.85,color:'#1F1B17'}};
+  const fmtDate=iso=>iso?new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
+
+  const renderBlock=(block,idx)=>{
+    const numIdx=block.type==='numbered'?blocks.slice(0,idx).filter(b=>b.type==='numbered').length+1:0;
+    return(
+      <div key={block.id} style={{position:'relative',marginBottom:block.type==='divider'?6:0}}>
+        <div style={{display:'flex',alignItems:'flex-start',gap:6,padding:'1px 0'}}
+          onMouseEnter={()=>setRowHover(block.id)} onMouseLeave={()=>{setRowHover(null);}}>
+          {/* Delete handle */}
+          <div style={{width:22,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',paddingTop:block.type==='h1'?8:block.type==='h2'?5:3,opacity:rowHover===block.id?1:0,transition:'opacity .12s'}}>
+            <button onMouseDown={e=>{e.preventDefault();delB(block.id);}} style={{background:'none',border:'none',cursor:'pointer',color:'#C8C3BD',fontSize:13,width:20,height:20,borderRadius:4,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .1s',padding:0}} onMouseEnter={e=>{e.currentTarget.style.background='#FEF2F2';e.currentTarget.style.color='#C0392B';}} onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='#C8C3BD';}}>×</button>
+          </div>
+          <div style={{flex:1,minWidth:0,position:'relative'}}>
+            {/* DIVIDER */}
+            {block.type==='divider'&&<hr style={{border:'none',borderTop:'2px solid rgba(0,0,0,0.1)',margin:'10px 0',cursor:'pointer'}} onClick={()=>delB(block.id)} title="Klicken zum Löschen"/>}
+            {/* IMAGE */}
+            {block.type==='image'&&(
+              <div style={{marginBottom:4}}>
+                {block.content
+                  ?<div style={{position:'relative',display:'inline-block',maxWidth:'100%'}}>
+                      <img src={block.content} alt={block.caption||''} style={{maxWidth:'100%',borderRadius:10,display:'block'}}/>
+                      <button onMouseDown={e=>{e.preventDefault();updB(block.id,{content:'',caption:'',});}} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.55)',border:'none',borderRadius:6,color:'white',fontSize:12,padding:'3px 10px',cursor:'pointer',backdropFilter:'blur(4px)'}}>✕ Entfernen</button>
+                      <textarea value={block.caption||''} onChange={e=>updB(block.id,{caption:e.target.value})} placeholder="Bildunterschrift…" style={{...baseTA,fontSize:12.5,color:'#9A9590',marginTop:6,fontStyle:'italic'}} rows={1}/>
+                    </div>
+                  :<label style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',border:`2px dashed ${accent}44`,borderRadius:12,padding:'32px 20px',cursor:'pointer',gap:10,color:'#A8A39D',background:'#FAFAF8',transition:'all .15s'}}
+                      onMouseEnter={e=>{e.currentTarget.style.borderColor=accent;e.currentTarget.style.background='white';}}
+                      onMouseLeave={e=>{e.currentTarget.style.borderColor=accent+'44';e.currentTarget.style.background='#FAFAF8';}}
+                      onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=accent;}}
+                      onDragLeave={e=>{e.currentTarget.style.borderColor=accent+'44';}}
+                      onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&f.type.startsWith('image/')){const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}>
+                      <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>updB(block.id,{content:ev.target.result});r.readAsDataURL(f);}}}/>
+                      <span style={{fontSize:36,lineHeight:1}}>🖼</span>
+                      <div style={{fontSize:14,fontWeight:600,color:'#6B6560'}}>Bild hochladen oder hierher ziehen</div>
+                      <div style={{fontSize:12,color:'#C8C3BD'}}>JPG, PNG, GIF, WebP</div>
+                      <div style={{display:'flex',gap:6,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+                        <input placeholder="https://… Bild-URL" style={{fontSize:13,padding:'7px 12px',borderRadius:8,border:'1.5px solid #E5E1DC',width:250}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){updB(block.id,{content:e.target.value.trim()});}}}/>
+                        <span style={{fontSize:11,color:'#C8C3BD'}}>↵ Enter</span>
+                      </div>
+                    </label>
+                }
+              </div>
+            )}
+            {/* CODE */}
+            {block.type==='code'&&(
+              <div style={{background:'#1a1a2e',borderRadius:12,overflow:'hidden',marginBottom:2}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'rgba(255,255,255,0.04)',borderBottom:'1px solid rgba(255,255,255,0.06)'}}>
+                  <div style={{display:'flex',gap:5}}>{['#ff5f56','#ffbd2e','#27c93f'].map(c=><div key={c} style={{width:10,height:10,borderRadius:'50%',background:c}}/>)}</div>
+                  <select value={block.language||'js'} onChange={e=>updB(block.id,{language:e.target.value})} style={{fontSize:11.5,background:'rgba(255,255,255,0.08)',color:'#8892b0',border:'none',borderRadius:5,padding:'3px 8px',cursor:'pointer',marginLeft:4}}>
+                    {['js','ts','python','html','css','json','sql','bash','php','java','go','rust','c','cpp'].map(l=><option key={l} value={l}>{l}</option>)}
+                  </select>
+                  <div style={{flex:1}}/>
+                  <button onMouseDown={e=>{e.preventDefault();navigator.clipboard?.writeText(block.content||'');}} style={{fontSize:11.5,background:'rgba(255,255,255,0.06)',color:'#8892b0',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,padding:'3px 10px',cursor:'pointer'}}>📋 Kopieren</button>
+                </div>
+                <textarea ref={el=>{if(el)blockRefs.current[block.id]=el;}}
+                  value={block.content||''}
+                  onChange={e=>{updB(block.id,{content:e.target.value});const el=e.target;el.style.height='auto';el.style.height=el.scrollHeight+'px';}}
+                  onKeyDown={e=>{if(e.key==='Tab'){e.preventDefault();const s=e.target.selectionStart;const v=e.target.value;updB(block.id,{content:v.slice(0,s)+'  '+v.slice(e.target.selectionEnd)});setTimeout(()=>{const el=blockRefs.current[block.id];if(el){el.selectionStart=el.selectionEnd=s+2;}},0);}if(e.key==='Escape'){setSlashMenu(null);setAddMenu(null);}}}
+                  placeholder="// Code hier eingeben…"
+                  style={{...baseTA,fontFamily:'"Fira Code","Cascadia Code",Consolas,monospace',fontSize:13.5,lineHeight:1.65,color:'#cdd6f4',padding:'14px 16px',minHeight:56,background:'transparent'}}
+                  rows={3}/>
+              </div>
+            )}
+            {/* TEXT / HEADINGS / LISTS */}
+            {!['divider','image','code'].includes(block.type)&&(
+              <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
+                {block.type==='bullet'&&<span style={{color:accent,fontSize:18,lineHeight:1.5,flexShrink:0,marginTop:1,userSelect:'none'}}>•</span>}
+                {block.type==='numbered'&&<span style={{color:accent,fontSize:15,lineHeight:1.85,flexShrink:0,minWidth:22,textAlign:'right',userSelect:'none'}}>{numIdx}.</span>}
+                <textarea
+                  ref={el=>{if(el){blockRefs.current[block.id]=el;el.style.height='auto';el.style.height=el.scrollHeight+'px';}}}
+                  value={block.content||''}
+                  onChange={e=>handleChange(block.id,e.target.value)}
+                  onKeyDown={e=>handleKey(e,block)}
+                  onFocus={()=>setAddMenu(null)}
+                  placeholder={block.type==='text'?'Tippe / für Blöcke…':block.type==='h1'?'Überschrift 1':block.type==='h2'?'Überschrift 2':block.type==='h3'?'Überschrift 3':'Listenpunkt…'}
+                  style={{...baseTA,...(ts[block.type]||ts.text),flex:1,minHeight:28,paddingTop:block.type==='h1'?8:block.type==='h2'?5:block.type==='h3'?3:0}}
+                  rows={1}/>
+              </div>
+            )}
+            {/* Slash menu */}
+            {slashMenu?.blockId===block.id&&filteredDefs.length>0&&(
+              <div style={{position:'absolute',left:0,top:'100%',zIndex:300,background:'white',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.16)',border:'1px solid rgba(0,0,0,0.07)',padding:'6px',minWidth:230,maxHeight:300,overflowY:'auto'}}>
+                {filteredDefs.map(d=>(
+                  <button key={d.type} onMouseDown={e=>{e.preventDefault();applySlash(block.id,d.type);}}
+                    style={{display:'flex',alignItems:'center',gap:10,width:'100%',padding:'8px 10px',borderRadius:8,border:'none',background:'none',cursor:'pointer',textAlign:'left'}}
+                    onMouseEnter={e=>e.currentTarget.style.background='#F5F3F0'} onMouseLeave={e=>e.currentTarget.style.background='none'}>
+                    <span style={{fontSize:11.5,fontFamily:'monospace',fontWeight:700,color:accent,width:28,textAlign:'center',flexShrink:0}}>{d.icon}</span>
+                    <div><div style={{fontSize:13,fontWeight:600,color:'#141210'}}>{d.label}</div><div style={{fontSize:11,color:'#A8A39D'}}>{d.desc}</div></div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Between-block add button */}
+        <div style={{height:14,display:'flex',alignItems:'center',opacity:rowHover===block.id?1:0,transition:'opacity .12s',gap:0}}
+          onMouseEnter={()=>setRowHover(block.id)} onMouseLeave={()=>setRowHover(null)}>
+          <div style={{flex:1,height:1,background:'rgba(0,0,0,0.07)'}}/>
+          <button onMouseDown={e=>{e.preventDefault();setAddMenu(addMenu===block.id?null:block.id);}}
+            style={{width:20,height:20,borderRadius:'50%',background:'white',border:`1.5px solid ${addMenu===block.id?accent:'#D5D0CA'}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,cursor:'pointer',color:addMenu===block.id?accent:'#A8A39D',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',transition:'all .12s',padding:0,lineHeight:1,flexShrink:0}}>+</button>
+          <div style={{flex:1,height:1,background:'rgba(0,0,0,0.07)'}}/>
+        </div>
+        {addMenu===block.id&&(
+          <div style={{position:'absolute',left:28,zIndex:200,background:'white',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.15)',border:'1px solid rgba(0,0,0,0.07)',padding:'8px',display:'flex',flexWrap:'wrap',gap:5,maxWidth:400}}>
+            {BLOCK_DEFS.map(d=>(
+              <button key={d.type} onMouseDown={e=>{e.preventDefault();insertB(block.id,d.type);}}
+                style={{display:'flex',alignItems:'center',gap:6,padding:'6px 10px',borderRadius:7,border:'1px solid rgba(0,0,0,0.06)',background:'#FAFAF8',cursor:'pointer',fontSize:12.5,transition:'all .1s'}}
+                onMouseEnter={e=>{e.currentTarget.style.background=accent+'18';e.currentTarget.style.borderColor=accent+'50';}}
+                onMouseLeave={e=>{e.currentTarget.style.background='#FAFAF8';e.currentTarget.style.borderColor='rgba(0,0,0,0.06)';}}>
+                <span style={{fontFamily:'monospace',fontWeight:700,color:accent,fontSize:11,minWidth:18,textAlign:'center'}}>{d.icon}</span>
+                <span style={{color:'#3F3A35'}}>{d.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return(
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:'white'}} onClick={e=>{if(e.target===e.currentTarget){setAddMenu(null);setSlashMenu(null);}}}>
+      {/* Header mit Inline-Umbenennung */}
+      <div style={{padding:'12px 22px',borderBottom:'1px solid rgba(0,0,0,0.06)',display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+        <div style={{width:8,height:8,borderRadius:'50%',background:accent,flexShrink:0}}/>
+        <div style={{flex:1,minWidth:0}}>
+          {editingName
+            ?<input value={fileName} onChange={e=>setFileName(e.target.value)} autoFocus
+                onBlur={()=>{const n=fileName.trim()||file.name;onRenameFile(n);setEditingName(false);}}
+                onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape'){const n=fileName.trim()||file.name;onRenameFile(n);setEditingName(false);}}}
+                style={{fontSize:14,fontWeight:700,border:'none',borderBottom:`2px solid ${accent}`,outline:'none',background:'transparent',width:'100%',padding:'1px 0'}}/>
+            :<div style={{display:'inline-flex',alignItems:'center',gap:5,cursor:'text'}} onClick={()=>{setFileName(file.name);setEditingName(true);}}>
+                <span style={{fontWeight:700,fontSize:14,color:'#141210'}}>{file.name}</span>
+                <span style={{fontSize:12,color:'#C8C3BD'}}>✎</span>
+              </div>
+          }
+          <div style={{fontSize:11,color:'#B0ABA5',marginTop:1}}>Gespeichert {fmtDate(file.updatedAt||file.createdAt)}</div>
+        </div>
+        <div style={{fontSize:11,color:'#D5D0CA',flexShrink:0}}>Auto-Speicherung</div>
+      </div>
+      {/* Blöcke */}
+      <div style={{flex:1,overflowY:'auto',padding:'24px 32px 80px'}} onClick={e=>{if(e.target===e.currentTarget){setAddMenu(null);setSlashMenu(null);}}}>
+        <div style={{maxWidth:740,margin:'0 auto'}}>
+          {blocks.map((b,i)=>renderBlock(b,i))}
+          <div style={{paddingTop:16}}>
+            <button onMouseDown={e=>{e.preventDefault();insertB(blocks[blocks.length-1]?.id||null,'text');}}
+              style={{background:'none',border:`1.5px dashed ${accent}33`,borderRadius:9,padding:'7px 20px',fontSize:13,color:'#C8C3BD',cursor:'pointer',transition:'all .12s',width:'100%',textAlign:'left'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor=accent;e.currentTarget.style.color=accent;e.currentTarget.style.background=accent+'0a';}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor=accent+'33';e.currentTarget.style.color='#C8C3BD';e.currentTarget.style.background='none';}}>+ Block hinzufügen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function CampaignsView({campaigns, onUpdate}){
   const [view,setView]=useState('overview'); // 'overview' | 'campaign'
@@ -5248,31 +5475,9 @@ function CampaignsView({campaigns, onUpdate}){
   const [renamingCamp,setRenamingCamp]=useState(null);
   const [renamingFile,setRenamingFile]=useState(null);
   const [renameVal,setRenameVal]=useState('');
-  const [fileContent,setFileContent]=useState('');
-  const [saveTimer,setSaveTimer]=useState(null);
 
-  React.useEffect(()=>{
-    if(selFile&&selCamp){
-      const camp=(campaigns||[]).find(c=>c.id===selCamp);
-      const file=(camp?.files||[]).find(f=>f.id===selFile);
-      setFileContent(file?.content||'');
-    }
-  },[selFile,selCamp]);
-
-  const saveFile=React.useCallback((content)=>{
-    if(!selCamp||!selFile)return;
-    const now=new Date().toISOString();
-    onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:(c.files||[]).map(f=>f.id!==selFile?f:{...f,content,updatedAt:now})}));
-  },[selCamp,selFile,campaigns,onUpdate]);
-
-  const handleContentChange=val=>{
-    setFileContent(val);
-    if(saveTimer)clearTimeout(saveTimer);
-    setSaveTimer(setTimeout(()=>saveFile(val),800));
-  };
-
-  const openCamp=c=>{setSelCamp(c.id);setSelFile(null);setFileContent('');setView('campaign');};
-  const goBack=()=>{setView('overview');setSelCamp(null);setSelFile(null);setFileContent('');};
+  const openCamp=c=>{setSelCamp(c.id);setSelFile(null);setView('campaign');};
+  const goBack=()=>{setView('overview');setSelCamp(null);setSelFile(null);};
 
   const createCamp=()=>{
     if(!newCampName.trim())return;
@@ -5290,12 +5495,12 @@ function CampaignsView({campaigns, onUpdate}){
     if(!newFileName.trim()||!selCamp)return;
     const f={id:uid(),name:newFileName.trim(),content:'',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
     onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:[...(c.files||[]),f]}));
-    setSelFile(f.id);setFileContent('');setAddingFile(false);setNewFileName('');
+    setSelFile(f.id);setAddingFile(false);setNewFileName('');
   };
   const deleteFile=(campId,fileId)=>{
     if(!confirm('Datei löschen?'))return;
     onUpdate((campaigns||[]).map(c=>c.id!==campId?c:{...c,files:(c.files||[]).filter(f=>f.id!==fileId)}));
-    if(selFile===fileId){setSelFile(null);setFileContent('');}
+    if(selFile===fileId)setSelFile(null);
   };
   const doRenameCamp=()=>{
     if(!renameVal.trim())return;
@@ -5471,20 +5676,19 @@ function CampaignsView({campaigns, onUpdate}){
             </div>
           </div>
         ):(
-          <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:'white'}}>
-            <div style={{padding:'11px 22px',borderBottom:'1px solid rgba(0,0,0,0.06)',display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-              <div style={{width:7,height:7,borderRadius:'50%',background:activeCamp?.color||'#6366f1',flexShrink:0}}/>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:14,color:'#141210'}}>{activeFile?.name}</div>
-                <div style={{fontSize:11,color:'#B0ABA5',marginTop:1}}>Gespeichert {fmtDate(activeFile?.updatedAt||activeFile?.createdAt)}</div>
-              </div>
-              <div style={{fontSize:11,color:'#D5D0CA'}}>Automatisch gespeichert</div>
-            </div>
-            <textarea value={fileContent} onChange={e=>handleContentChange(e.target.value)}
-              placeholder="Schreibe hier deine Notizen, Ideen oder Details…"
-              style={{flex:1,border:'none',outline:'none',resize:'none',padding:'24px 28px',fontSize:15,lineHeight:1.85,color:'#1F1B17',fontFamily:'inherit',background:'white'}}
-            />
-          </div>
+          <BlockEditor
+            key={selFile}
+            file={activeFile}
+            campColor={activeCamp?.color}
+            onSaveContent={content=>{
+              const now=new Date().toISOString();
+              onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:(c.files||[]).map(f=>f.id!==selFile?f:{...f,content,updatedAt:now})}));
+            }}
+            onRenameFile={name=>{
+              if(!name.trim()||!selCamp)return;
+              onUpdate((campaigns||[]).map(c=>c.id!==selCamp?c:{...c,files:(c.files||[]).map(f=>f.id!==selFile?f:{...f,name:name.trim()})}));
+            }}
+          />
         )}
       </div>
     </div>
