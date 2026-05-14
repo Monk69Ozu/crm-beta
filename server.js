@@ -148,6 +148,11 @@ async function initDb() {
         PRIMARY KEY (token)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // Add 'used' column to password_resets if it was created by an older version
+    await conn.query(`
+      ALTER TABLE password_resets
+        ADD COLUMN IF NOT EXISTS used TINYINT(1) NOT NULL DEFAULT 0
+    `).catch(()=>{});
     // ── NEW UNIFIED AUTH TABLE ─────────────────────────────────────
     // Single row (id=1). Contains everything needed to log in from ANY device
     // with the same password. No localStorage state required.
