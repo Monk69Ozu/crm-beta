@@ -229,8 +229,14 @@ app.put('/api/data', requireAuth, async (req, res) => {
       return res.json({ version: 1 });
     }
     const currentVer = rows[0].version;
-    // Conflict check: if caller sent a version and it doesn't match → 409
-    if (version !== null && version !== undefined && Number(version) !== currentVer) {
+    // SAFETY: if caller sends version=null (fresh setup / unknown state), refuse to
+    // overwrite existing data — prevents a new browser session from wiping old records.
+    if (version === null || version === undefined) {
+      await conn.rollback();
+      return res.status(409).json({ error: 'EXISTING_DATA', version: currentVer, message: 'Server hat bereits Daten. Bitte zuerst laden (version mitsenden).' });
+    }
+    // Conflict check: version must match current
+    if (Number(version) !== currentVer) {
       await conn.rollback();
       return res.status(409).json({ error: 'Conflict: data was modified by another device' });
     }
