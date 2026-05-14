@@ -1598,23 +1598,35 @@ function ChangePasswordModal({cryptoKey,onClose}){
   const [busy,setBusy]=useState(false);
   const [done,setDone]=useState(false);
   const [err,setErr]=useState('');
+  // noServerAuth: crm_auth table empty → first-time setup, no old password needed
+  const [noServerAuth,setNoServerAuth]=useState(null); // null=loading, true/false
+
+  useEffect(()=>{
+    if(!SELF_HOSTED){setNoServerAuth(false);return;}
+    serverHasAuth().then(has=>setNoServerAuth(!has)).catch(()=>setNoServerAuth(false));
+  },[]);
 
   const submit=async()=>{
     if(newPw.length<8){setErr('Neues Passwort: mindestens 8 Zeichen.');return;}
     if(newPw!==newPw2){setErr('Passwörter stimmen nicht überein.');return;}
     setBusy(true);setErr('');
     try{
-      // verifyPassword returns an extractable copy of the master key — always use this,
-      // NOT the cryptoKey prop which may be non-extractable (e.g. after auto-login)
-      const verifiedKey=await verifyPassword(curPw);
-      if(!verifiedKey){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
-      // In self-hosted mode: re-wrap on server (source of truth)
-      if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
-        await changePasswordServer(verifiedKey, newPw);
+      if(SELF_HOSTED && noServerAuth){
+        // No crm_auth yet — initialize with current master key + new password
+        // cryptoKey is extractable (set to true in all login paths)
+        const masterB64 = await exportMasterKeyB64(cryptoKey);
+        await setupPasswordServer(newPw, masterB64);
+        try{await storeKeyForDevice(cryptoKey);}catch(e){}
       } else {
-        await rewrapMasterKey(verifiedKey, newPw);
+        const verifiedKey=await verifyPassword(curPw);
+        if(!verifiedKey){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
+        if(SELF_HOSTED && window.WEBARS_API_TOKEN){
+          await changePasswordServer(verifiedKey,newPw);
+        } else {
+          await rewrapMasterKey(verifiedKey,newPw);
+        }
+        try{await storeKeyForDevice(verifiedKey);}catch(e){}
       }
-      try{await storeKeyForDevice(verifiedKey);}catch(e){}
       setDone(true);
     }catch(e){setErr('Fehler: '+e.message);}
     setBusy(false);
@@ -1626,29 +1638,38 @@ function ChangePasswordModal({cryptoKey,onClose}){
     <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal-box" style={{width:400}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:24}}>
-          <div style={{fontWeight:700,fontSize:17}}>🔑 Passwort ändern</div>
+          <div style={{fontWeight:700,fontSize:17}}>🔑 {noServerAuth?'Passwort festlegen':'Passwort ändern'}</div>
           <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose}>✕</button>
         </div>
-        {done?(
+        {noServerAuth===null?(
+          <div style={{textAlign:'center',padding:20,color:'#6B6560'}}>Prüfe Server…</div>
+        ):done?(
           <>
             <div style={{textAlign:'center',padding:'20px 0',color:'#166534',background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:12,marginBottom:18,fontSize:14,fontWeight:600}}>
-              ✓ Passwort erfolgreich geändert
+              ✓ Passwort erfolgreich {noServerAuth?'festgelegt':'geändert'}
             </div>
             <button className="btn btn-primary" style={{width:'100%'}} onClick={onClose}>Schließen</button>
           </>
         ):(
           <>
-            <div style={{display:'grid',gap:12,marginBottom:16}}>
-              <div>
-                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Aktuelles Passwort</div>
-                <input type="password" value={curPw} onChange={e=>setCurPw(e.target.value)} placeholder="••••••••" autoFocus style={inputStyle}/>
+            {noServerAuth&&(
+              <div style={{fontSize:13,color:'#92400E',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:8,padding:'10px 13px',marginBottom:16,lineHeight:1.5}}>
+                Noch kein Passwort am Server eingerichtet. Lege jetzt dein Passwort fest — danach funktioniert die Anmeldung auf jedem Gerät.
               </div>
+            )}
+            <div style={{display:'grid',gap:12,marginBottom:16}}>
+              {!noServerAuth&&(
+                <div>
+                  <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Aktuelles Passwort</div>
+                  <input type="password" value={curPw} onChange={e=>setCurPw(e.target.value)} placeholder="••••••••" autoFocus style={inputStyle}/>
+                </div>
+              )}
               <div>
                 <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort</div>
-                <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Mindestens 8 Zeichen" style={inputStyle}/>
+                <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Mindestens 8 Zeichen" autoFocus={!!noServerAuth} style={inputStyle}/>
               </div>
               <div>
-                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort bestätigen</div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Passwort bestätigen</div>
                 <input type="password" value={newPw2} onChange={e=>setNewPw2(e.target.value)} placeholder="••••••••"
                   style={inputStyle} onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
               </div>
@@ -1656,8 +1677,8 @@ function ChangePasswordModal({cryptoKey,onClose}){
             {err&&<div style={{fontSize:12.5,color:'#C0392B',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:8,padding:'9px 12px',marginBottom:14,textAlign:'center'}}>{err}</div>}
             <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
               <button className="btn btn-ghost" onClick={onClose}>Abbrechen</button>
-              <button className="btn btn-primary" onClick={submit} disabled={busy||!curPw||!newPw||!newPw2}>
-                {busy?<><span className="spinner"></span> …</>:'Passwort ändern'}
+              <button className="btn btn-primary" onClick={submit} disabled={busy||(!noServerAuth&&!curPw)||!newPw||!newPw2}>
+                {busy?<><span className="spinner"></span> …</>:noServerAuth?'Passwort festlegen':'Passwort ändern'}
               </button>
             </div>
           </>
