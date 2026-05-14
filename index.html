@@ -373,7 +373,38 @@ async function escrowMasterKey(masterKey) {
   try {
     const escrowKey = await deriveEscrowKey();
     const rawMk = await crypto.subtle.exportKey('raw', masterKey);
-    const encrypted = await aesEncrypt(escrowKey, toB64(rawMk));
+    const newMkB64 = toB64(rawMk);
+
+    // SAFETY: refuse to overwrite an existing escrow whose key currently
+    // decrypts the server data. This prevents a fresh-setup/reset session
+    // from destroying the canonical key and losing access to old data.
+    try {
+      const checkR = await fetch('/api/key-escrow', {headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`}});
+      if (checkR.ok) {
+        const existing = await checkR.json();
+        let existingMkB64 = null;
+        try { existingMkB64 = await aesDecrypt(escrowKey, existing); } catch {}
+        if (existingMkB64 && existingMkB64 !== newMkB64) {
+          // Different key already in escrow — check if it still matches server data
+          try {
+            const dr = await fetch('/api/data', {headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`}});
+            if (dr.ok) {
+              const dj = await dr.json();
+              if (dj.content) {
+                const existingMk = await importMasterKeyFromB64(existingMkB64);
+                try {
+                  await aesDecrypt(existingMk, dj.content);
+                  console.warn('[escrow] Refusing to overwrite — existing escrow key still decrypts server data');
+                  return; // DON'T overwrite
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    const encrypted = await aesEncrypt(escrowKey, newMkB64);
     await fetch('/api/key-escrow', {
       method:'PUT',
       headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`,'Content-Type':'application/json'},
@@ -1543,6 +1574,136 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
   const [showMigExport, setShowMigExport] = useState(false);
   const [migExportPw, setMigExportPw] = useState('');
   const [migExportBusy, setMigExportBusy] = useState(false);
+  // Recovery: detect when current key doesn't match server data + try escrow / manual key
+  const [showRecovery, setShowRecovery] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryStatus, setRecoveryStatus] = useState(null); // {currentKeyFp,escrowKeyFp,keysMatch,escrowMasterKey,backupStatus:[{id,name,decryptable:'current'|'escrow'|'manual'|'none'}],dataDecryptable}
+  const [manualKeyB64, setManualKeyB64] = useState('');
+
+  const keyFingerprint = async (k) => {
+    try { const b64 = await exportMasterKeyB64(k); return b64.slice(0,12)+'…'+b64.slice(-4); }
+    catch(e) { return '?'; }
+  };
+
+  const runRecoveryAnalysis = async () => {
+    setRecoveryBusy(true); setBackupErr(''); setBackupInfo('');
+    try {
+      const s = currentSettings;
+      if (!s || !s.token) throw new Error('Keine Server-Verbindung. Trage zuerst dein API_SECRET ein.');
+
+      // Step 1: fingerprint current login key
+      const currentFp = await keyFingerprint(cryptoKey);
+
+      // Step 2: try to fetch & decrypt escrow
+      let escrowMasterKey = null;
+      let escrowFp = null;
+      try {
+        const r = await fetch('/api/key-escrow', {headers:{Authorization:`Bearer ${s.token}`}});
+        if (r.ok) {
+          const blob = await r.json();
+          escrowMasterKey = await unescrowMasterKey(blob);
+          escrowFp = await keyFingerprint(escrowMasterKey);
+        }
+      } catch(e) { console.warn('Escrow fetch/decrypt failed:', e.message); }
+
+      // Step 3: check current /api/data
+      let dataDecryptable = 'none';
+      try {
+        const r = await fetch('/api/data', {headers:{Authorization:`Bearer ${s.token}`}});
+        if (r.ok) {
+          const j = await r.json();
+          if (j.content) {
+            try { await aesDecrypt(cryptoKey, j.content); dataDecryptable = 'current'; }
+            catch {
+              if (escrowMasterKey) {
+                try { await aesDecrypt(escrowMasterKey, j.content); dataDecryptable = 'escrow'; } catch {}
+              }
+            }
+          } else { dataDecryptable = 'empty'; }
+        }
+      } catch(e) { console.warn('Data check failed:', e.message); }
+
+      // Step 4: list backups & test each
+      let backupList = [];
+      try {
+        const rl = await fetch('/api/backups', {headers:{Authorization:`Bearer ${s.token}`}});
+        if (rl.ok) {
+          const lj = await rl.json();
+          backupList = lj.backups || [];
+        }
+      } catch(e) {}
+
+      const backupStatus = [];
+      for (const b of backupList) {
+        try {
+          const rb = await fetch(`/api/backups/${b.id}`, {headers:{Authorization:`Bearer ${s.token}`}});
+          if (!rb.ok) { backupStatus.push({id:b.id,name:b.name,decryptable:'error'}); continue; }
+          const bj = await rb.json();
+          const content = bj.content;
+          let dec = 'none';
+          try { await aesDecrypt(cryptoKey, content); dec = 'current'; }
+          catch {
+            if (escrowMasterKey) {
+              try { await aesDecrypt(escrowMasterKey, content); dec = 'escrow'; } catch {}
+            }
+          }
+          backupStatus.push({id:b.id,name:b.name,decryptable:dec});
+        } catch(e) { backupStatus.push({id:b.id,name:b.name,decryptable:'error'}); }
+      }
+
+      setRecoveryStatus({
+        currentFp,
+        escrowFp,
+        keysMatch: escrowFp && currentFp === escrowFp,
+        escrowMasterKey,
+        backupStatus,
+        dataDecryptable,
+      });
+    } catch(e) { setBackupErr('Recovery-Analyse fehlgeschlagen: ' + e.message); }
+    setRecoveryBusy(false);
+  };
+
+  const restoreWithKey = async (backupId, useKey) => {
+    setRecoveryBusy(true); setBackupErr(''); setBackupInfo('');
+    try {
+      const s = currentSettings;
+      const r = await fetch(`/api/backups/${backupId}`, {headers:{Authorization:`Bearer ${s.token}`}});
+      if (!r.ok) throw new Error('Backup nicht ladbar (' + r.status + ')');
+      const j = await r.json();
+      const decrypted = await aesDecrypt(useKey, j.content);
+      const reEncrypted = await aesEncrypt(cryptoKey, decrypted);
+      const ri = await fetch('/api/import', {
+        method:'POST',
+        headers:{Authorization:`Bearer ${s.token}`,'Content-Type':'application/json'},
+        body: JSON.stringify({encryptedData: reEncrypted}),
+      });
+      if (!ri.ok) { const e = await ri.json().catch(()=>({})); throw new Error('Import: ' + (e.error||ri.status)); }
+      const ij = await ri.json();
+      _ghSha = String(ij.version);
+      localStorage.setItem(GH_SHA_KEY, _ghSha);
+      setBackupInfo('✓ Backup wiederhergestellt — bitte Seite neu laden, um die Daten zu sehen.');
+    } catch(e) { setBackupErr('Restore fehlgeschlagen: ' + e.message); }
+    setRecoveryBusy(false);
+  };
+
+  const tryManualKey = async () => {
+    setRecoveryBusy(true); setBackupErr('');
+    try {
+      const key = await importMasterKeyFromB64(manualKeyB64.trim());
+      // Re-test all backups with this key
+      const updated = [...(recoveryStatus?.backupStatus || [])];
+      for (let i = 0; i < updated.length; i++) {
+        const s = currentSettings;
+        const rb = await fetch(`/api/backups/${updated[i].id}`, {headers:{Authorization:`Bearer ${s.token}`}});
+        if (!rb.ok) continue;
+        const bj = await rb.json();
+        try { await aesDecrypt(key, bj.content); updated[i] = {...updated[i], decryptable:'manual'}; } catch {}
+      }
+      setRecoveryStatus(prev => ({...prev, manualMasterKey:key, backupStatus:updated}));
+      setBackupInfo('Manueller Schlüssel akzeptiert und gegen alle Backups getestet.');
+    } catch(e) { setBackupErr('Schlüssel ungültig: ' + e.message); }
+    setRecoveryBusy(false);
+  };
 
   const doMigrationExport = async () => {
     setBackupErr(''); setMigExportBusy(true);
@@ -1870,6 +2031,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
               <button className="btn btn-ghost btn-sm" onClick={downloadCurrentBackup} disabled={backupBusy}>↓ Backup jetzt herunterladen</button>
               <button className="btn btn-ghost btn-sm" onClick={loadServerBackups} disabled={backupBusy}>{backupBusy?'…':'Verlauf anzeigen'}</button>
               <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(v=>!v);setMigExportPw('');setBackupErr('');}} disabled={backupBusy}>📦 Migration-Export</button>
+              <button className="btn btn-sm" style={{background:'#FEF3C7',color:'#92400E',border:'1.5px solid #FCD34D'}} onClick={()=>{setShowRecovery(v=>!v);}} disabled={backupBusy}>🔧 Schlüssel-Recovery</button>
               {SELF_HOSTED && (
                 <label className="btn btn-ghost btn-sm" style={{cursor:'pointer'}}>
                   ↑ Backup-Datei importieren
@@ -1941,6 +2103,78 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             )}
             {backupInfo && <div style={{fontSize:12,color:'#16a34a',padding:'7px 11px',background:'#F0FDF4',borderRadius:7,marginBottom:8,border:'1px solid #BBF7D0'}}>{backupInfo}</div>}
             {backupErr && <div style={{fontSize:12,color:'#9A3412',padding:'7px 11px',background:'#FFF7ED',borderRadius:7,marginBottom:8,border:'1px solid #FED7AA'}}>{backupErr}</div>}
+            {showRecovery && (
+              <div style={{background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:10,padding:14,marginBottom:10}}>
+                <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:6}}>🔧 Schlüssel-Recovery (Daten-Wiederherstellung)</div>
+                <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
+                  Prüft welche Schlüssel deine Daten entschlüsseln können — aktueller Login, Server-Escrow, oder ein manuell eingegebener Master Key.
+                </div>
+                <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+                  <button className="btn btn-primary btn-sm" onClick={runRecoveryAnalysis} disabled={recoveryBusy}>
+                    {recoveryBusy ? 'Analysiere…' : '🔍 Schlüssel-Status prüfen'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>{setShowRecovery(false);setRecoveryStatus(null);setManualKeyB64('');}}>Schließen</button>
+                </div>
+
+                {recoveryStatus && (
+                  <div style={{fontSize:12.5,color:'#3F2E13',background:'#FFFEF7',border:'1px solid #FDE68A',borderRadius:8,padding:10,marginBottom:10}}>
+                    <div style={{fontFamily:'monospace',fontSize:11.5,lineHeight:1.7}}>
+                      <div>Aktueller Login: <strong>{recoveryStatus.currentFp}</strong></div>
+                      <div>Server-Escrow:  <strong>{recoveryStatus.escrowFp || '— nicht verfügbar —'}</strong></div>
+                      <div style={{marginTop:4,color:recoveryStatus.keysMatch?'#15803D':'#B45309'}}>
+                        {recoveryStatus.keysMatch ? '✓ Beide Schlüssel identisch — Escrow bringt keinen anderen Zugriff.' : (recoveryStatus.escrowFp ? '⚠ Schlüssel verschieden — Escrow kann zusätzliche Daten entsperren!' : '⚠ Kein Escrow verfügbar.')}
+                      </div>
+                      <div style={{marginTop:4}}>Aktuelle Daten (/api/data): {recoveryStatus.dataDecryptable==='current'?'✓ mit Login lesbar':recoveryStatus.dataDecryptable==='escrow'?'⚠ NUR mit Escrow lesbar':recoveryStatus.dataDecryptable==='empty'?'leer':'✗ keiner der Schlüssel passt'}</div>
+                    </div>
+
+                    {recoveryStatus.dataDecryptable==='escrow' && recoveryStatus.escrowMasterKey && (
+                      <div style={{marginTop:8,padding:'8px 10px',background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6}}>
+                        <div style={{fontSize:12,marginBottom:6}}>Deine aktuellen Daten sind mit dem Escrow-Schlüssel verschlüsselt, nicht mit deinem Login.</div>
+                        <button className="btn btn-primary btn-sm" disabled={recoveryBusy} onClick={async()=>{
+                          setRecoveryBusy(true);setBackupErr('');setBackupInfo('');
+                          try{
+                            const s=currentSettings;
+                            const r=await fetch('/api/data',{headers:{Authorization:`Bearer ${s.token}`}});
+                            const j=await r.json();
+                            const data=await aesDecrypt(recoveryStatus.escrowMasterKey,j.content);
+                            const re=await aesEncrypt(cryptoKey,data);
+                            const ri=await fetch('/api/import',{method:'POST',headers:{Authorization:`Bearer ${s.token}`,'Content-Type':'application/json'},body:JSON.stringify({encryptedData:re})});
+                            if(!ri.ok)throw new Error((await ri.json().catch(()=>({}))).error||ri.status);
+                            setBackupInfo('✓ Daten neu verschlüsselt mit deinem Login — bitte Seite neu laden.');
+                          }catch(e){setBackupErr(e.message);}
+                          setRecoveryBusy(false);
+                        }}>↻ Aktuelle Daten mit Login-Schlüssel neu verschlüsseln</button>
+                      </div>
+                    )}
+
+                    {recoveryStatus.backupStatus.length > 0 && (
+                      <div style={{marginTop:10}}>
+                        <div style={{fontWeight:600,marginBottom:4}}>Server-Backups:</div>
+                        {recoveryStatus.backupStatus.map(b=>(
+                          <div key={b.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderTop:'1px dashed #FDE68A',fontSize:11.5}}>
+                            <span style={{fontFamily:'monospace'}}>{b.name}</span>
+                            <span>
+                              {b.decryptable==='current' && <button className="btn btn-primary btn-sm" style={{fontSize:11}} disabled={recoveryBusy} onClick={()=>restoreWithKey(b.id,cryptoKey)}>↻ Wiederherstellen</button>}
+                              {b.decryptable==='escrow' && <button className="btn btn-primary btn-sm" style={{fontSize:11}} disabled={recoveryBusy} onClick={()=>restoreWithKey(b.id,recoveryStatus.escrowMasterKey)}>↻ Mit Escrow wiederherstellen</button>}
+                              {b.decryptable==='manual' && recoveryStatus.manualMasterKey && <button className="btn btn-primary btn-sm" style={{fontSize:11}} disabled={recoveryBusy} onClick={()=>restoreWithKey(b.id,recoveryStatus.manualMasterKey)}>↻ Mit Schlüssel wiederherstellen</button>}
+                              {b.decryptable==='none' && <span style={{color:'#9A3412'}}>✗ kein passender Schlüssel</span>}
+                              {b.decryptable==='error' && <span style={{color:'#9A3412'}}>Fehler</span>}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{marginTop:12,padding:'8px 10px',background:'#FFFEF7',border:'1px dashed #FDE68A',borderRadius:6}}>
+                      <div style={{fontSize:11.5,marginBottom:6,color:'#78350F'}}>Falls du noch einen Master-Key (base64) aus einem alten Browser hast — hier einfügen und testen:</div>
+                      <input type="text" placeholder="z.B. 'aBcDeF...' (44 Zeichen)" value={manualKeyB64} onChange={e=>setManualKeyB64(e.target.value)}
+                        style={{width:'100%',fontSize:11.5,fontFamily:'monospace',padding:'6px 8px',borderRadius:6,border:'1px solid #FDE68A',background:'#FFFEF0',marginBottom:6,boxSizing:'border-box'}}/>
+                      <button className="btn btn-ghost btn-sm" style={{fontSize:11.5}} onClick={tryManualKey} disabled={recoveryBusy||!manualKeyB64.trim()}>Manuellen Schlüssel testen</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {migratePending && (
               <div style={{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:10,padding:16,marginBottom:10}}>
                 <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:8}}>🔑 Altes Passwort erforderlich</div>
