@@ -9,7 +9,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Non-root user for security
-RUN addgroup -S crm && adduser -S crm -G crm
+RUN addgroup -S crm && adduser -S crm -G crm && apk add --no-cache curl
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
