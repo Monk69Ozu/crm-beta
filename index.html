@@ -104,7 +104,6 @@ const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const DEVICE_KEY_STORE = 'webars_dkey_v1';
 const TOTP_ENC_STORE   = 'webars_totp_denc_v1';
 const PKEY_ENC_STORE   = 'webars_pkey_denc_v1';
-const EMAIL_H16_KEY    = 'webars_email16_v1';   // 16-char hex email hash for reset flow
 
 // ─── Invite helpers ─────────────────────────────────────────────
 async function sha256b64(str) {
@@ -180,8 +179,6 @@ function hasTOTP()   { return !!localStorage.getItem(TOTP_KEY); }
 async function storeEmailHash(email) {
   const hash = await sha256b64('WEBARS_EMAIL_' + email.trim().toLowerCase());
   localStorage.setItem(EMAIL_HASH_KEY, hash);
-  const h16 = await emailHash16(email.trim());
-  localStorage.setItem(EMAIL_H16_KEY, h16);
 }
 async function checkEmailHash(email) {
   const stored = localStorage.getItem(EMAIL_HASH_KEY);
@@ -825,38 +822,6 @@ async function loginWithTOTPCode(code) {
 }
 function hasDeviceKeySetup() { return !!localStorage.getItem(TOTP_ENC_STORE) && !!localStorage.getItem(PKEY_ENC_STORE); }
 
-// ─── Email-reset setup (self-hosted only) ───────────────────────
-// After login, pushes an encrypted copy of the master key to the server,
-// protected by a random server-side key.  This enables email-based reset.
-async function pushEmailResetData(hash16, masterKeyB64) {
-  if (!SELF_HOSTED) return;
-  if (!hash16 || !masterKeyB64) return;
-  try {
-    // Only register once — don't overwrite existing reset data
-    const chk = await fetch(`/api/recovery/${hash16}/email-reset`, {cache:'no-store'});
-    if (chk.ok) {
-      const d = await chk.json().catch(()=>({}));
-      if (d.has_reset) return; // already set up
-    }
-    // Generate random 32-byte reset key
-    const resetKeyBytes = crypto.getRandomValues(new Uint8Array(32));
-    const resetKeyB64   = toB64(resetKeyBytes);
-    const resetKey      = await crypto.subtle.importKey(
-      'raw', resetKeyBytes, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']
-    );
-    // Encrypt the master key b64 string with the reset key
-    const enc = await aesEncrypt(resetKey, masterKeyB64);
-    await fetch(`/api/recovery/${hash16}/email-reset`, {
-      method:  'PUT',
-      headers: {'Content-Type':'application/json'},
-      body:    JSON.stringify({email_reset_key: resetKeyB64, email_reset_enc: JSON.stringify(enc)}),
-    });
-    console.log('[email-reset] Reset key registered on server ✓');
-  } catch(e) {
-    console.warn('[email-reset] Setup failed (non-critical):', e.message||e);
-  }
-}
-
 // ─── TOTP ───────────────────────────────────────────────────────
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 function base32Encode(bytes) {
@@ -1103,192 +1068,11 @@ function PasswordInput({value,onChange,placeholder,autoFocus,onKeyDown,className
 }
 
 
-// ══════════════════════════════════════════════════════════════════
-//  FORGOT PASSWORD SCREEN (self-hosted only)
-// ══════════════════════════════════════════════════════════════════
-function ForgotPasswordScreen({onBack}) {
-  const [email, setEmail] = useState(OWNER_EMAIL||'');
-  const [busy,  setBusy]  = useState(false);
-  const [done,  setDone]  = useState(false);
-  const [err,   setErr]   = useState('');
-
-  const submit = async () => {
-    setBusy(true); setErr('');
-    try {
-      const hash = await emailHash16(email.trim().toLowerCase());
-      const r = await fetch('/api/forgot-password', {
-        method:  'POST',
-        headers: {'Content-Type':'application/json'},
-        body:    JSON.stringify({email: email.trim(), emailHash: hash}),
-      });
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok) { setErr(d.error||'Serverfehler.'); setBusy(false); return; }
-      if (d.hint === 'no_reset_data') {
-        setErr('Kein Reset-Schlüssel gefunden. Melde dich einmal normal mit deinem Passwort an — danach funktioniert das Reset-Feature automatisch. Falls das nicht möglich ist, prüfe die Server-Logs in Coolify.');
-        setBusy(false); return;
-      }
-      setDone(true);
-    } catch(e) { setErr('Netzwerkfehler: '+e.message); }
-    setBusy(false);
-  };
-
-  const AUTH_BOX = {maxWidth:380,margin:'auto',marginTop:80,background:'#1A1917',borderRadius:18,padding:'36px 32px',boxShadow:'0 8px 40px rgba(0,0,0,0.45)',display:'flex',flexDirection:'column',gap:18};
-
-  return (
-    <div style={{minHeight:'100vh',background:'#0F0E0C',padding:'0 16px'}}>
-      <div style={AUTH_BOX}>
-        <div style={{color:'white',fontWeight:700,fontSize:18}}>Passwort vergessen</div>
-        {!done ? (<>
-          <div style={{fontSize:13,color:'rgba(255,255,255,0.45)',lineHeight:1.6}}>
-            Gib deine E-Mail-Adresse ein. Du erhältst einen Reset-Link per E-Mail (oder er erscheint in den Server-Logs wenn kein SMTP konfiguriert ist).
-          </div>
-          <input
-            type="email" value={email} onChange={e=>setEmail(e.target.value)}
-            placeholder="deine@email.at" autoFocus
-            onKeyDown={e=>e.key==='Enter'&&!busy&&email.trim()&&submit()}
-            style={{background:'rgba(255,255,255,0.07)',border:'1.5px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'13px 14px',color:'white',fontSize:14,outline:'none',width:'100%',boxSizing:'border-box'}}
-          />
-          {err && <div style={{fontSize:12.5,color:'#F87171',background:'rgba(248,113,113,0.08)',padding:'10px 12px',borderRadius:8,whiteSpace:'pre-line'}}>{err}</div>}
-          <button onClick={submit} disabled={busy||!email.trim()}
-            style={{background:busy||!email.trim()?'rgba(255,255,255,0.08)':'white',color:busy||!email.trim()?'rgba(255,255,255,0.3)':'#0F0E0C',border:'none',borderRadius:10,padding:'13px',fontWeight:700,fontSize:14,cursor:busy||!email.trim()?'not-allowed':'pointer',transition:'all 0.15s'}}>
-            {busy?'Sende…':'Reset-Link anfordern →'}
-          </button>
-          <button onClick={onBack} style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:13,cursor:'pointer',padding:4}}>
-            ← Zurück zum Login
-          </button>
-        </>) : (<>
-          <div style={{fontSize:24,textAlign:'center'}}>✉️</div>
-          <div style={{color:'white',fontWeight:600,fontSize:15,textAlign:'center'}}>Reset-Link versendet</div>
-          <div style={{fontSize:13,color:'rgba(255,255,255,0.5)',lineHeight:1.7,textAlign:'center'}}>
-            Falls du SMTP konfiguriert hast, prüfe deinen Posteingang.<br/>
-            Andernfalls öffne <strong style={{color:'rgba(255,255,255,0.75)'}}>Coolify → crm-System → Logs</strong> und kopiere den Link von dort.
-          </div>
-          <div style={{background:'rgba(255,255,255,0.05)',borderRadius:8,padding:'10px 14px',fontSize:12,color:'rgba(255,255,255,0.35)',lineHeight:1.6}}>
-            Tipp: Suche in den Logs nach <code style={{color:'rgba(255,255,255,0.6)'}}>PASSWORT-RESET LINK</code>
-          </div>
-          <button onClick={onBack} style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:13,cursor:'pointer',padding:4}}>
-            ← Zurück zum Login
-          </button>
-        </>)}
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════
-//  RESET PASSWORD SCREEN  (?reset=TOKEN in URL)
-// ══════════════════════════════════════════════════════════════════
-function ResetPasswordScreen({token, onDone}) {
-  const [phase,  setPhase]  = useState('loading'); // loading | form | success | error
-  const [err,    setErr]    = useState('');
-  const [mkB64,  setMkB64]  = useState(null);
-  const [pw,     setPw]     = useState('');
-  const [pw2,    setPw2]    = useState('');
-  const [busy,   setBusy]   = useState(false);
-
-  useEffect(()=>{
-    (async()=>{
-      try {
-        const r = await fetch(`/api/reset-token/${token}`, {cache:'no-store'});
-        const d = await r.json().catch(()=>({}));
-        if (!r.ok) { setErr(d.error||'Ungültiger oder abgelaufener Link.'); setPhase('error'); return; }
-        const {email_reset_key, email_reset_enc} = d;
-        const resetKeyBytes = fromB64(email_reset_key);
-        const resetKey = await crypto.subtle.importKey('raw', resetKeyBytes, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
-        const decrypted = await aesDecrypt(resetKey, JSON.parse(email_reset_enc));
-        setMkB64(decrypted);
-        setPhase('form');
-      } catch(e) {
-        setErr('Fehler: '+e.message);
-        setPhase('error');
-      }
-    })();
-  }, []);
-
-  const submit = async () => {
-    if (pw.length < 8)  { setErr('Passwort muss mindestens 8 Zeichen haben.'); return; }
-    if (pw !== pw2)     { setErr('Passwörter stimmen nicht überein.'); return; }
-    setBusy(true); setErr('');
-    try {
-      // Import master key (extractable=true so rewrapMasterKey can export it)
-      const masterKey = await importMasterKeyFromB64(mkB64);
-      // Re-wrap master key with new password (updates localStorage)
-      await rewrapMasterKey(masterKey, pw);
-      // Persist device key so auto-login works immediately after reset
-      try { await storeKeyForDevice(masterKey); } catch(e) {}
-      setPhase('success');
-      setTimeout(()=>{
-        // Clear ?reset= from URL, then reload so app reinitializes with new password
-        const url = new URL(window.location.href);
-        url.searchParams.delete('reset');
-        window.history.replaceState(null, '', url.toString());
-        onDone();
-      }, 2200);
-    } catch(e) { setErr('Fehler beim Zurücksetzen: '+e.message); }
-    setBusy(false);
-  };
-
-  const AUTH_BOX = {maxWidth:380,margin:'auto',marginTop:80,background:'#1A1917',borderRadius:18,padding:'36px 32px',boxShadow:'0 8px 40px rgba(0,0,0,0.45)',display:'flex',flexDirection:'column',gap:18};
-
-  if (phase==='loading') return (
-    <div style={{minHeight:'100vh',background:'#0F0E0C',display:'flex',alignItems:'center',justifyContent:'center'}}>
-      <span style={{width:28,height:28,border:'2.5px solid rgba(255,255,255,.1)',borderTopColor:'white',borderRadius:'50%',animation:'spin .7s linear infinite',display:'block'}}></span>
-    </div>
-  );
-
-  if (phase==='error') return (
-    <div style={{minHeight:'100vh',background:'#0F0E0C',padding:'0 16px'}}>
-      <div style={AUTH_BOX}>
-        <div style={{fontSize:28,textAlign:'center'}}>⚠️</div>
-        <div style={{color:'#F87171',fontWeight:600,fontSize:15,textAlign:'center'}}>Reset fehlgeschlagen</div>
-        <div style={{fontSize:13,color:'rgba(255,255,255,0.5)',lineHeight:1.6,textAlign:'center'}}>{err}</div>
-        <a href="/" style={{textAlign:'center',color:'rgba(255,255,255,0.4)',fontSize:13,textDecoration:'none'}}>← Zurück zum Login</a>
-      </div>
-    </div>
-  );
-
-  if (phase==='success') return (
-    <div style={{minHeight:'100vh',background:'#0F0E0C',display:'flex',alignItems:'center',justifyContent:'center'}}>
-      <div style={{...AUTH_BOX,textAlign:'center',gap:14}}>
-        <div style={{fontSize:36}}>✅</div>
-        <div style={{color:'white',fontWeight:700,fontSize:17}}>Passwort erfolgreich zurückgesetzt!</div>
-        <div style={{fontSize:13,color:'rgba(255,255,255,0.4)'}}>Du wirst jetzt weitergeleitet…</div>
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{minHeight:'100vh',background:'#0F0E0C',padding:'0 16px'}}>
-      <div style={AUTH_BOX}>
-        <div style={{color:'white',fontWeight:700,fontSize:18}}>Neues Passwort festlegen</div>
-        <div style={{fontSize:13,color:'rgba(255,255,255,0.45)',lineHeight:1.6}}>
-          Wähle ein sicheres Passwort. Deine Daten bleiben dabei vollständig erhalten.
-        </div>
-        <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
-          placeholder="Neues Passwort (min. 8 Zeichen)" autoFocus
-          onKeyDown={e=>e.key==='Enter'&&!busy&&pw&&pw2&&submit()}
-          style={{background:'rgba(255,255,255,0.07)',border:'1.5px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'13px 14px',color:'white',fontSize:14,outline:'none',width:'100%',boxSizing:'border-box'}}
-        />
-        <input type="password" value={pw2} onChange={e=>setPw2(e.target.value)}
-          placeholder="Passwort bestätigen"
-          onKeyDown={e=>e.key==='Enter'&&!busy&&pw&&pw2&&submit()}
-          style={{background:'rgba(255,255,255,0.07)',border:'1.5px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'13px 14px',color:'white',fontSize:14,outline:'none',width:'100%',boxSizing:'border-box'}}
-        />
-        {err && <div style={{fontSize:12.5,color:'#F87171',background:'rgba(248,113,113,0.08)',padding:'10px 12px',borderRadius:8}}>{err}</div>}
-        <button onClick={submit} disabled={busy||!pw||!pw2}
-          style={{background:busy||!pw||!pw2?'rgba(255,255,255,0.08)':'white',color:busy||!pw||!pw2?'rgba(255,255,255,0.3)':'#0F0E0C',border:'none',borderRadius:10,padding:'13px',fontWeight:700,fontSize:14,cursor:busy||!pw||!pw2?'not-allowed':'pointer',transition:'all 0.15s'}}>
-          {busy?'Speichere…':'Passwort zurücksetzen →'}
-        </button>
-        <a href="/" style={{textAlign:'center',color:'rgba(255,255,255,0.25)',fontSize:12,textDecoration:'none'}}>← Abbrechen</a>
-      </div>
-    </div>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════
 //  AUTH SCREEN  — WordPress-Style: nur Passwort, fertig
 // ══════════════════════════════════════════════════════════════════
-function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
+function AuthScreen({mode, onDone, onSwitchMode}) {
   const isSetup = mode === 'setup';
   const [email, setEmail] = useState(OWNER_EMAIL || '');
   const [pw,    setPw]    = useState('');
@@ -1350,14 +1134,6 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
           <button className="btn auth-btn" onClick={submit} disabled={busy||!pw}>
             {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:isSetup?'Konto erstellen →':'Anmelden →'}
           </button>
-          {!isSetup && onForgotPassword && (
-            <button onClick={onForgotPassword}
-              style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:12.5,cursor:'pointer',textAlign:'center',paddingTop:2}}
-              onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.6)'}
-              onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.3)'}>
-              Passwort vergessen?
-            </button>
-          )}
         </div>
         {onSwitchMode && (
           <div style={{textAlign:'center',marginTop:20,fontSize:12.5,color:'rgba(255,255,255,0.3)'}}>
@@ -7002,27 +6778,15 @@ function AuthWrapper(){
   const [crmData,setCrmData]=useState(null);
   const [prefilledInvite,setPrefilledInvite]=useState('');
 
-  // ── Special URL-param modes (no auth required) ───────────────
-  const urlParams=(()=>{try{return new URLSearchParams(window.location.search);}catch(e){return new URLSearchParams();}})();
-
   // Public form mode: ?form=<slug> renders the public form without login
-  const publicFormSlug=urlParams.get('form');
+  const publicFormSlug=(()=>{try{return new URLSearchParams(window.location.search).get('form');}catch(e){return null;}})();
   if(publicFormSlug)return <PublicFormPage slug={publicFormSlug}/>;
-
-  // Password-reset mode: ?reset=<token>
-  const resetToken=urlParams.get('reset');
-  if(resetToken)return <ResetPasswordScreen token={resetToken} onDone={()=>{
-    const url=new URL(window.location.href);
-    url.searchParams.delete('reset');
-    window.history.replaceState(null,'',url.toString());
-    // Reload so the app re-initialises with newly set password
-    window.location.reload();
-  }}/>;
 
   useEffect(()=>{
     // Read ?invite=CODE from URL
     try{
-      const inv = urlParams.get('invite');
+      const params=new URLSearchParams(window.location.search);
+      const inv=params.get('invite');
       if(inv) setPrefilledInvite(inv.trim());
     }catch(e){}
     // Try auto-login with stored device key (no password needed on same device)
@@ -7039,13 +6803,7 @@ function AuthWrapper(){
             }
             let data = await loadEncrypted(key);
             console.log('[auto-login] success');
-            setCryptoKey(key); setCrmData(data || DEFAULT_STATE); setPhase('app');
-            // Register email-reset data on server (best effort, after login)
-            if(SELF_HOSTED){
-              const h16=localStorage.getItem(EMAIL_H16_KEY);
-              if(h16) pushEmailResetData(h16, b64key).catch(()=>{});
-            }
-            return;
+            setCryptoKey(key); setCrmData(data || DEFAULT_STATE); setPhase('app'); return;
           }
         }catch(e){ console.warn('[auto-login] failed:', e); }
       }
@@ -7055,7 +6813,7 @@ function AuthWrapper(){
 
   const handleReset=()=>{
     if(!window.confirm(`Alle verschlüsselten Daten unwiderruflich löschen?\n\nWiederherstellungskontakt: ${RECOVERY_EMAIL}`))return;
-    [SALT_KEY,VERIFY_KEY,TOTP_KEY,DATA_KEY,EMAIL_HASH_KEY,EMAIL_H16_KEY,INVITES_KEY,DEVICE_KEY_STORE,TOTP_ENC_STORE,PKEY_ENC_STORE,GH_SETTINGS_KEY,MASTER_KEY_STORE].forEach(k=>localStorage.removeItem(k));
+    [SALT_KEY,VERIFY_KEY,TOTP_KEY,DATA_KEY,EMAIL_HASH_KEY,INVITES_KEY,DEVICE_KEY_STORE,TOTP_ENC_STORE,PKEY_ENC_STORE,GH_SETTINGS_KEY,MASTER_KEY_STORE].forEach(k=>localStorage.removeItem(k));
     clearGithubSettings();
     setPhase('setup');
   };
@@ -7086,31 +6844,10 @@ function AuthWrapper(){
     setCryptoKey(key);
     setCrmData(data);
     setPhase('app');
-    // Register email-reset data on server after successful login (best effort)
-    if(SELF_HOSTED && email){
-      (async()=>{
-        try{
-          const h16 = await emailHash16(email.trim().toLowerCase());
-          localStorage.setItem(EMAIL_H16_KEY, h16);
-          // Try to get master key bytes: extractable key (password login) first,
-          // then fall back to PKEY_ENC_STORE (TOTP/device-key login)
-          let mkB64;
-          try { mkB64 = await exportMasterKeyB64(key); }
-          catch(e){
-            const pk=localStorage.getItem(PKEY_ENC_STORE);
-            if(!pk) return;
-            const dk=await getOrCreateDeviceKey();
-            mkB64=await aesDecrypt(dk, JSON.parse(pk));
-          }
-          await pushEmailResetData(h16, mkB64);
-        }catch(e){ console.warn('[email-reset]',e); }
-      })();
-    }
   };
 
-  if(phase==='forgot-password')return <ForgotPasswordScreen onBack={()=>setPhase('login')}/>;
   if(phase==='setup')return <AuthScreen mode="setup" onDone={completeAuth} onSwitchMode={()=>setPhase('login')}/>;
-  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onSwitchMode={()=>setPhase('setup')} onForgotPassword={SELF_HOSTED?()=>setPhase('forgot-password'):null}/>;
+  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onSwitchMode={()=>setPhase('setup')}/>;
   if(phase==='app'&&cryptoKey&&crmData)return <CRMApp cryptoKey={cryptoKey} initialData={crmData} onLock={()=>setPhase('login')} onLogout={handleLogout}/>;
   return null;
 }
