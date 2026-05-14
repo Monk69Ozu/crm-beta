@@ -1183,11 +1183,20 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
               </button>
             )}
             <button onClick={()=>{
-              // Show localStorage key diagnostics to aid debugging
               const hasVerify = !!localStorage.getItem('webars_verify_v1');
               const hasSalt   = !!localStorage.getItem('webars_salt_v1');
               const hasMk     = !!localStorage.getItem('webars_master_v1');
-              alert(`Diagnose:\nVERIFY_KEY: ${hasVerify}\nSALT_KEY: ${hasSalt}\nMASTER_KEY: ${hasMk}\n\nFalls alle fehlen: Seite neu laden und "Einrichten" wählen.\nFalls vorhanden: Passwort ist falsch oder Browser-Daten wurden verändert.`);
+              let msg = `Diagnose:\nVERIFY_KEY: ${hasVerify}\nSALT_KEY: ${hasSalt}\nMASTER_KEY: ${hasMk}\n\n`;
+              if (!hasSalt && hasVerify) {
+                msg += '⚠️ SALT fehlt aber VERIFY vorhanden — Browser-Daten unvollständig.\nPasswörter können NICHT funktionieren ohne Salt.\n→ Nutze "Passwort vergessen?" um über den Server-Escrow wieder Zugang zu bekommen.';
+              } else if (!hasSalt && !hasVerify && !hasMk) {
+                msg += 'Keine lokalen Daten. Wähle "Einrichten" für ein neues Konto, oder stelle zuerst ein Backup wieder her.';
+              } else if (hasSalt && hasVerify && hasMk) {
+                msg += 'Alle Keys vorhanden — Passwort wird geprüft. Falls falsch: genau dieses Passwort wurde zum Einrichten verwendet.';
+              } else {
+                msg += 'Teilweise Daten vorhanden — ungewöhnlicher Zustand. "Passwort vergessen?" empfohlen.';
+              }
+              alert(msg);
             }} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:11.5,cursor:'pointer',padding:0}}>
               Diagnose
             </button>
@@ -1712,11 +1721,13 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
       if (!canDecrypt) {
         // Key mismatch — ask for old password instead of hard-failing.
         // Auto-read local salt+masterKey if still in localStorage (password-only flow).
-        const localSaltBytes = getSalt();
+        // Read existing salt directly — do NOT call getSalt() which auto-generates
+        // a new random salt when missing, making every password attempt fail.
+        const localSaltB64 = localStorage.getItem(SALT_KEY);
         const localMasterEncRaw = localStorage.getItem(MASTER_KEY_STORE);
-        if (localSaltBytes && localMasterEncRaw) {
-          // Store salt as b64 so it survives JSON serialisation in React state
-          setMigratePending({encryptedData: content, localSalt: toB64(localSaltBytes), localMasterEncKey: JSON.parse(localMasterEncRaw), fromServerBackup: true});
+        if (localSaltB64 && localMasterEncRaw) {
+          // Salt is already b64 as stored — pass directly
+          setMigratePending({encryptedData: content, localSalt: localSaltB64, localMasterEncKey: JSON.parse(localMasterEncRaw), fromServerBackup: true});
         } else {
           // localStorage cleared — fall back to manual console-extract flow
           setMigratePending({encryptedData: content, fromServerBackup: true});
