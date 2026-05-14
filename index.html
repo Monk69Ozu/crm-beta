@@ -1686,23 +1686,90 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setRecoveryBusy(false);
   };
 
+  // Smart key parser: accepts
+  //   (1) raw 44-char base64 master key
+  //   (2) JSON {master_raw, master_wrapped, salt}  → from F12 console
+  //   (3) JSON {s, m}                                → legacy migration-extract
+  // If only wrapped key + salt are present, asks for old password.
+  const [manualOldPw, setManualOldPw] = useState('');
+  const [manualNeedsPw, setManualNeedsPw] = useState(false);
+  const [manualParsed, setManualParsed] = useState(null); // {salt, wrapped} when needsPw
+
   const tryManualKey = async () => {
-    setRecoveryBusy(true); setBackupErr('');
+    setRecoveryBusy(true); setBackupErr(''); setManualNeedsPw(false); setManualParsed(null);
     try {
-      const key = await importMasterKeyFromB64(manualKeyB64.trim());
-      // Re-test all backups with this key
-      const updated = [...(recoveryStatus?.backupStatus || [])];
-      for (let i = 0; i < updated.length; i++) {
-        const s = currentSettings;
-        const rb = await fetch(`/api/backups/${updated[i].id}`, {headers:{Authorization:`Bearer ${s.token}`}});
-        if (!rb.ok) continue;
-        const bj = await rb.json();
-        try { await aesDecrypt(key, bj.content); updated[i] = {...updated[i], decryptable:'manual'}; } catch {}
+      const raw = manualKeyB64.trim();
+      let masterKey = null;
+
+      // Try JSON first
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch {}
+
+      if (parsed && typeof parsed === 'object') {
+        // Variant: master_raw is the unwrapped base64 master key
+        if (parsed.master_raw && typeof parsed.master_raw === 'string') {
+          masterKey = await importMasterKeyFromB64(parsed.master_raw);
+        }
+        // Variant: master_wrapped + salt — need old password
+        else if ((parsed.master_wrapped || parsed.m) && (parsed.salt || parsed.s)) {
+          const wrapped = parsed.master_wrapped || parsed.m;
+          const salt    = parsed.salt           || parsed.s;
+          setManualParsed({wrapped: typeof wrapped === 'string' ? JSON.parse(wrapped) : wrapped, salt});
+          setManualNeedsPw(true);
+          setBackupErr('');
+          setBackupInfo('Salt + wrapped Key erkannt — bitte altes Passwort eingeben (siehe Feld unten).');
+          setRecoveryBusy(false);
+          return;
+        }
       }
-      setRecoveryStatus(prev => ({...prev, manualMasterKey:key, backupStatus:updated}));
+
+      if (!masterKey) {
+        // Treat as raw base64 master key (44 chars typical)
+        masterKey = await importMasterKeyFromB64(raw);
+      }
+
+      await testKeyAgainstBackups(masterKey, 'manual');
       setBackupInfo('Manueller Schlüssel akzeptiert und gegen alle Backups getestet.');
     } catch(e) { setBackupErr('Schlüssel ungültig: ' + e.message); }
     setRecoveryBusy(false);
+  };
+
+  const tryManualWithPassword = async () => {
+    setRecoveryBusy(true); setBackupErr('');
+    try {
+      if (!manualParsed) throw new Error('Keine Daten zum Entpacken.');
+      const saltBytes = fromB64(manualParsed.salt);
+      const wrapKey = await deriveKey(manualOldPw, saltBytes);
+      let masterB64;
+      try { masterB64 = await aesDecrypt(wrapKey, manualParsed.wrapped); }
+      catch { throw new Error('Altes Passwort falsch (oder Daten passen nicht zum Salt).'); }
+      const masterKey = await importMasterKeyFromB64(masterB64);
+      await testKeyAgainstBackups(masterKey, 'manual');
+      setBackupInfo('✓ Alter Schlüssel rekonstruiert und gegen Backups getestet.');
+      setManualNeedsPw(false);
+    } catch(e) { setBackupErr(e.message); }
+    setRecoveryBusy(false);
+  };
+
+  const testKeyAgainstBackups = async (key, label) => {
+    const updated = [...(recoveryStatus?.backupStatus || [])];
+    const s = currentSettings;
+    for (let i = 0; i < updated.length; i++) {
+      const rb = await fetch(`/api/backups/${updated[i].id}`, {headers:{Authorization:`Bearer ${s.token}`}});
+      if (!rb.ok) continue;
+      const bj = await rb.json();
+      try { await aesDecrypt(key, bj.content); updated[i] = {...updated[i], decryptable: label}; } catch {}
+    }
+    // Also check current /api/data
+    let dataDecryptable = recoveryStatus?.dataDecryptable;
+    try {
+      const r = await fetch('/api/data', {headers:{Authorization:`Bearer ${s.token}`}});
+      if (r.ok) {
+        const j = await r.json();
+        if (j.content) { try { await aesDecrypt(key, j.content); dataDecryptable = label; } catch {} }
+      }
+    } catch {}
+    setRecoveryStatus(prev => ({...prev, manualMasterKey:key, backupStatus:updated, dataDecryptable}));
   };
 
   const doMigrationExport = async () => {
@@ -2165,11 +2232,28 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                       </div>
                     )}
 
-                    <div style={{marginTop:12,padding:'8px 10px',background:'#FFFEF7',border:'1px dashed #FDE68A',borderRadius:6}}>
-                      <div style={{fontSize:11.5,marginBottom:6,color:'#78350F'}}>Falls du noch einen Master-Key (base64) aus einem alten Browser hast — hier einfügen und testen:</div>
-                      <input type="text" placeholder="z.B. 'aBcDeF...' (44 Zeichen)" value={manualKeyB64} onChange={e=>setManualKeyB64(e.target.value)}
-                        style={{width:'100%',fontSize:11.5,fontFamily:'monospace',padding:'6px 8px',borderRadius:6,border:'1px solid #FDE68A',background:'#FFFEF0',marginBottom:6,boxSizing:'border-box'}}/>
-                      <button className="btn btn-ghost btn-sm" style={{fontSize:11.5}} onClick={tryManualKey} disabled={recoveryBusy||!manualKeyB64.trim()}>Manuellen Schlüssel testen</button>
+                    <div style={{marginTop:12,padding:'10px 12px',background:'#FFFEF7',border:'1px dashed #FDE68A',borderRadius:6}}>
+                      <div style={{fontSize:12,marginBottom:6,color:'#78350F',fontWeight:600}}>🔑 Alten Schlüssel von einem anderen Gerät einfügen</div>
+                      <div style={{fontSize:11.5,marginBottom:8,color:'#78350F',lineHeight:1.55}}>
+                        Geh auf einem Gerät/Browser wo du <em>früher</em> eingeloggt warst auf crm.webars.at, drücke <code style={{background:'rgba(0,0,0,0.08)',padding:'1px 4px',borderRadius:3}}>F12</code> → Console und führe aus:
+                      </div>
+                      <div style={{background:'#1E1B18',color:'#E2DDD8',fontFamily:'monospace',fontSize:10.5,padding:'8px 10px',borderRadius:6,marginBottom:8,userSelect:'all',wordBreak:'break-all',lineHeight:1.5}}>
+                        JSON.stringify(&#123;master_raw:sessionStorage.getItem('webars_device_key_v1'),master_wrapped:localStorage.getItem('webars_master_v1'),salt:localStorage.getItem('webars_salt_v1')&#125;)
+                      </div>
+                      <div style={{fontSize:11,marginBottom:8,color:'#78350F',lineHeight:1.5}}>Das Ergebnis hier einfügen (geht auch direkt als 44-Zeichen base64 Master Key):</div>
+                      <textarea placeholder='{"master_raw":"…","master_wrapped":"…","salt":"…"}' value={manualKeyB64} onChange={e=>setManualKeyB64(e.target.value)}
+                        rows={3} style={{width:'100%',fontSize:11.5,fontFamily:'monospace',padding:'6px 8px',borderRadius:6,border:'1px solid #FDE68A',background:'#FFFEF0',marginBottom:6,boxSizing:'border-box',resize:'vertical'}}/>
+                      <button className="btn btn-ghost btn-sm" style={{fontSize:11.5}} onClick={tryManualKey} disabled={recoveryBusy||!manualKeyB64.trim()}>Schlüssel testen</button>
+
+                      {manualNeedsPw && (
+                        <div style={{marginTop:10,padding:'8px 10px',background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6}}>
+                          <div style={{fontSize:11.5,marginBottom:6,color:'#78350F'}}>Nur Salt + wrapped Key gefunden — gib das <strong>alte Passwort</strong> ein, das damals für dieses Gerät verwendet wurde:</div>
+                          <input type="password" placeholder="Altes Passwort" value={manualOldPw} onChange={e=>setManualOldPw(e.target.value)}
+                            style={{width:'100%',fontSize:12,padding:'6px 8px',borderRadius:6,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:6,boxSizing:'border-box'}}
+                            autoFocus onKeyDown={e=>e.key==='Enter'&&!recoveryBusy&&manualOldPw&&tryManualWithPassword()}/>
+                          <button className="btn btn-primary btn-sm" style={{fontSize:11.5}} onClick={tryManualWithPassword} disabled={recoveryBusy||!manualOldPw}>Mit altem Passwort entsperren</button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
