@@ -345,7 +345,7 @@ async function setupPassword(password, providedMasterKeyB64 = null) {
   return masterKey; // master key is the actual encryption key for all data
 }
 
-// Re-encrypt master key with NEW password (for password reset via recovery code)
+// Re-encrypt master key with NEW password (for password change / reset)
 async function rewrapMasterKey(masterKey, newPassword){
   localStorage.removeItem(SALT_KEY);
   const salt = getSalt();
@@ -353,6 +353,38 @@ async function rewrapMasterKey(masterKey, newPassword){
   localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
   const masterB64 = await exportMasterKeyB64(masterKey);
   localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(await aesEncrypt(wrapKey, masterB64)));
+}
+
+// ─── Key Escrow (enables password reset without losing data) ────────
+// Master key is encrypted with an API_SECRET-derived key and stored on the server.
+// This lets us recover the master key after a forgotten password.
+async function deriveEscrowKey() {
+  const enc = new TextEncoder();
+  const raw = await crypto.subtle.importKey(
+    'raw', enc.encode(window.WEBARS_API_TOKEN || ''), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt: enc.encode('webars-key-escrow-v1'), iterations:100000, hash:'SHA-256'},
+    raw, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
+  );
+}
+async function escrowMasterKey(masterKey) {
+  if (!SELF_HOSTED || !window.WEBARS_API_TOKEN) return;
+  try {
+    const escrowKey = await deriveEscrowKey();
+    const rawMk = await crypto.subtle.exportKey('raw', masterKey);
+    const encrypted = await aesEncrypt(escrowKey, toB64(rawMk));
+    await fetch('/api/key-escrow', {
+      method:'PUT',
+      headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`,'Content-Type':'application/json'},
+      body: JSON.stringify(encrypted)
+    });
+  } catch(e) { console.warn('Key escrow update failed:', e); }
+}
+async function unescrowMasterKey(escrowBlob) {
+  const escrowKey = await deriveEscrowKey();
+  const mkB64 = await aesDecrypt(escrowKey, escrowBlob);
+  return importMasterKeyFromB64(mkB64);
 }
 
 // Save recovery blob to cloud (called whenever password OR ghSettings change)
@@ -1072,7 +1104,7 @@ function PasswordInput({value,onChange,placeholder,autoFocus,onKeyDown,className
 // ══════════════════════════════════════════════════════════════════
 //  AUTH SCREEN  — WordPress-Style: nur Passwort, fertig
 // ══════════════════════════════════════════════════════════════════
-function AuthScreen({mode, onDone, onSwitchMode}) {
+function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
   const isSetup = mode === 'setup';
   const [email, setEmail] = useState(OWNER_EMAIL || '');
   const [pw,    setPw]    = useState('');
@@ -1135,8 +1167,17 @@ function AuthScreen({mode, onDone, onSwitchMode}) {
             {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:isSetup?'Konto erstellen →':'Anmelden →'}
           </button>
         </div>
+        {!isSetup && onForgotPassword && SELF_HOSTED && (
+          <div style={{textAlign:'center',marginTop:14}}>
+            <button onClick={onForgotPassword} style={{background:'none',border:'none',color:'rgba(255,255,255,0.35)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
+              onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
+              onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.35)'}>
+              Passwort vergessen?
+            </button>
+          </div>
+        )}
         {onSwitchMode && (
-          <div style={{textAlign:'center',marginTop:20,fontSize:12.5,color:'rgba(255,255,255,0.3)'}}>
+          <div style={{textAlign:'center',marginTop:14,fontSize:12.5,color:'rgba(255,255,255,0.3)'}}>
             {isSetup
               ? <><span>Schon ein Konto? </span><button onClick={onSwitchMode} style={{background:'none',border:'none',color:'rgba(255,255,255,0.7)',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600}}>Anmelden</button></>
               : <><span>Noch kein Konto? </span><button onClick={onSwitchMode} style={{background:'none',border:'none',color:'rgba(255,255,255,0.7)',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600}}>Einrichten</button></>
@@ -1179,6 +1220,207 @@ function LockOverlay({onUnlock}) {
             {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Entsperren →'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── FORGOT PASSWORD SCREEN ───────────────────────────────────────
+function ForgotPasswordScreen({onBack}) {
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [resetUrl,setResetUrl]=useState('');
+  const [err,setErr]=useState('');
+
+  const send=async()=>{
+    setBusy(true);setErr('');
+    try{
+      const r=await fetch('/api/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      if(!r.ok){setErr('Server-Fehler. Bitte versuche es erneut.');setBusy(false);return;}
+      const j=await r.json();
+      if(j.resetUrl)setResetUrl(j.resetUrl);
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  return(
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <img src="logo.png" alt="WebArs" style={{width:60,height:60,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.35)',marginTop:4}}>Passwort zurücksetzen</div>
+        </div>
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          {!done?(
+            <>
+              <div style={{fontSize:13.5,color:'rgba(255,255,255,0.55)',lineHeight:1.65,textAlign:'center'}}>
+                Ein Zurücksetz-Link wird für dich generiert.<br/>
+                <span style={{fontSize:12,color:'rgba(255,255,255,0.3)'}}>Falls SMTP konfiguriert ist, wird er per E-Mail gesendet. Sonst wird er hier angezeigt.</span>
+              </div>
+              {err&&<div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
+              <button className="btn auth-btn" onClick={send} disabled={busy}>
+                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Link anfordern →'}
+              </button>
+            </>
+          ):(
+            <>
+              {resetUrl?(
+                <>
+                  <div style={{fontSize:13,color:'rgba(255,255,255,0.5)',lineHeight:1.6,textAlign:'center'}}>
+                    Kein SMTP konfiguriert. Hier ist dein Zurücksetz-Link:
+                  </div>
+                  <div style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'12px 14px',wordBreak:'break-all',userSelect:'all'}}>
+                    <a href={resetUrl} style={{color:'#60A5FA',fontSize:12.5,textDecoration:'none',lineHeight:1.5}}>{resetUrl}</a>
+                  </div>
+                  <button className="btn auth-btn" onClick={()=>window.location.href=resetUrl}>Jetzt zurücksetzen →</button>
+                </>
+              ):(
+                <div style={{fontSize:14,color:'rgba(255,255,255,0.65)',lineHeight:1.7,textAlign:'center',padding:'8px 0'}}>
+                  ✓ E-Mail wurde gesendet!<br/>
+                  <span style={{fontSize:12.5,color:'rgba(255,255,255,0.35)'}}>Überprüfe dein Postfach und klicke den Link.</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div style={{textAlign:'center',marginTop:18}}>
+          <button onClick={onBack} style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
+            onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
+            onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.3)'}>← Zurück zum Login</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RESET PASSWORD SCREEN (via ?reset=TOKEN in URL) ──────────────
+function ResetPasswordScreen({token}) {
+  const [pw,setPw]=useState('');
+  const [pw2,setPw2]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [err,setErr]=useState('');
+
+  const reset=async()=>{
+    if(pw.length<8){setErr('Mindestens 8 Zeichen.');return;}
+    if(pw!==pw2){setErr('Passwörter stimmen nicht überein.');return;}
+    setBusy(true);setErr('');
+    try{
+      const r=await fetch(`/api/reset-token/${encodeURIComponent(token)}`);
+      if(!r.ok){const j=await r.json();setErr(j.error||'Token ungültig oder abgelaufen.');setBusy(false);return;}
+      const j=await r.json();
+      const masterKey=await unescrowMasterKey(j.escrow);
+      await rewrapMasterKey(masterKey,pw);
+      try{await storeKeyForDevice(masterKey);}catch(e){}
+      await fetch(`/api/reset-token/${encodeURIComponent(token)}/confirm`,{method:'POST'});
+      // Clean URL
+      window.history.replaceState({},'','/');
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  return(
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <img src="logo.png" alt="WebArs" style={{width:60,height:60,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.35)',marginTop:4}}>Neues Passwort festlegen</div>
+        </div>
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          {done?(
+            <>
+              <div style={{fontSize:14,color:'rgba(255,255,255,0.65)',textAlign:'center',lineHeight:1.7,padding:'8px 0'}}>
+                ✓ Passwort erfolgreich geändert!<br/>
+                <span style={{fontSize:12.5,color:'rgba(255,255,255,0.35)'}}>Du kannst dich jetzt einloggen.</span>
+              </div>
+              <button className="btn auth-btn" onClick={()=>window.location.href='/'}>Zum Login →</button>
+            </>
+          ):(
+            <>
+              <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Neues Passwort (min. 8 Zeichen)" autoFocus onKeyDown={e=>e.key==='Enter'&&!busy&&reset()}/>
+              <PasswordInput value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Passwort bestätigen" onKeyDown={e=>e.key==='Enter'&&!busy&&reset()}/>
+              {err&&<div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
+              <button className="btn auth-btn" onClick={reset} disabled={busy||!pw||!pw2}>
+                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Passwort speichern →'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CHANGE PASSWORD MODAL (in-app) ───────────────────────────────
+function ChangePasswordModal({cryptoKey,onClose}){
+  const [curPw,setCurPw]=useState('');
+  const [newPw,setNewPw]=useState('');
+  const [newPw2,setNewPw2]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [err,setErr]=useState('');
+
+  const submit=async()=>{
+    if(newPw.length<8){setErr('Neues Passwort: mindestens 8 Zeichen.');return;}
+    if(newPw!==newPw2){setErr('Passwörter stimmen nicht überein.');return;}
+    setBusy(true);setErr('');
+    try{
+      const key=await verifyPassword(curPw);
+      if(!key){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
+      await rewrapMasterKey(cryptoKey,newPw);
+      try{await storeKeyForDevice(cryptoKey);}catch(e){}
+      try{await escrowMasterKey(cryptoKey);}catch(e){}
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  const inputStyle={width:'100%',padding:'11px 14px',borderRadius:9,border:'1.5px solid rgba(0,0,0,0.12)',fontSize:14,fontFamily:'inherit',outline:'none',boxSizing:'border-box'};
+
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal-box" style={{width:400}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:24}}>
+          <div style={{fontWeight:700,fontSize:17}}>🔑 Passwort ändern</div>
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose}>✕</button>
+        </div>
+        {done?(
+          <>
+            <div style={{textAlign:'center',padding:'20px 0',color:'#166534',background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:12,marginBottom:18,fontSize:14,fontWeight:600}}>
+              ✓ Passwort erfolgreich geändert
+            </div>
+            <button className="btn btn-primary" style={{width:'100%'}} onClick={onClose}>Schließen</button>
+          </>
+        ):(
+          <>
+            <div style={{display:'grid',gap:12,marginBottom:16}}>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Aktuelles Passwort</div>
+                <input type="password" value={curPw} onChange={e=>setCurPw(e.target.value)} placeholder="••••••••" autoFocus style={inputStyle}/>
+              </div>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort</div>
+                <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Mindestens 8 Zeichen" style={inputStyle}/>
+              </div>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort bestätigen</div>
+                <input type="password" value={newPw2} onChange={e=>setNewPw2(e.target.value)} placeholder="••••••••"
+                  style={inputStyle} onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
+              </div>
+            </div>
+            {err&&<div style={{fontSize:12.5,color:'#C0392B',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:8,padding:'9px 12px',marginBottom:14,textAlign:'center'}}>{err}</div>}
+            <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+              <button className="btn btn-ghost" onClick={onClose}>Abbrechen</button>
+              <button className="btn btn-primary" onClick={submit} disabled={busy||!curPw||!newPw||!newPw2}>
+                {busy?<><span className="spinner"></span> …</>:'Passwort ändern'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -6472,6 +6714,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
           {[
             {icon:<span style={{fontSize:13}}>🕐</span>,label:'Snapshots',action:()=>setModal('snapshots')},
             {icon:<Icons.Field/>,label:'Felder verwalten',action:()=>setModal('addField')},
+            {icon:<span style={{fontSize:13}}>🔑</span>,label:'Passwort',action:()=>setModal('changePassword')},
             {icon:<span style={{fontSize:13}}>⚙</span>,label:'Einstellungen',action:()=>setModal('githubSync')},
             (()=>{
               const sync=getSyncState();
@@ -6714,6 +6957,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='quoteSettings'&&<QuoteSettingsModal settings={state.quoteSettings} onSave={s=>upd({quoteSettings:s})} onClose={()=>setModal(null)}/>}
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
+    {modal==='changePassword'&&<ChangePasswordModal cryptoKey={cryptoKey} onClose={()=>setModal(null)}/>}
     {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
@@ -6782,6 +7026,10 @@ function AuthWrapper(){
   const publicFormSlug=(()=>{try{return new URLSearchParams(window.location.search).get('form');}catch(e){return null;}})();
   if(publicFormSlug)return <PublicFormPage slug={publicFormSlug}/>;
 
+  // Password reset mode: ?reset=TOKEN
+  const resetToken=(()=>{try{return new URLSearchParams(window.location.search).get('reset');}catch(e){return null;}})();
+  if(resetToken&&SELF_HOSTED)return <ResetPasswordScreen token={resetToken}/>;
+
   useEffect(()=>{
     // Read ?invite=CODE from URL
     try{
@@ -6841,13 +7089,16 @@ function AuthWrapper(){
         if (fresh) data = fresh;
       } catch(e) { console.warn('GitHub sync init failed', e); }
     }
+    // Silently update key escrow so password reset works in the future
+    escrowMasterKey(key).catch(()=>{});
     setCryptoKey(key);
     setCrmData(data);
     setPhase('app');
   };
 
   if(phase==='setup')return <AuthScreen mode="setup" onDone={completeAuth} onSwitchMode={()=>setPhase('login')}/>;
-  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onSwitchMode={()=>setPhase('setup')}/>;
+  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onSwitchMode={()=>setPhase('setup')} onForgotPassword={SELF_HOSTED?()=>setPhase('forgot'):null}/>;
+  if(phase==='forgot')return <ForgotPasswordScreen onBack={()=>setPhase('login')}/>;
   if(phase==='app'&&cryptoKey&&crmData)return <CRMApp cryptoKey={cryptoKey} initialData={crmData} onLock={()=>setPhase('login')} onLogout={handleLogout}/>;
   return null;
 }
