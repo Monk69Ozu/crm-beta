@@ -604,18 +604,45 @@ async function saveEncrypted(key, data) {
   // Auto-snapshot every 4 hours (no internet needed)
   const now = Date.now();
   if(now - _lastSnapAt > 4*3600*1000){ saveLocalSnapshot(encrypted); _lastSnapAt = now; }
-  // Also push to GitHub if configured (best effort, don't block local save)
+  // Push to cloud
   if (_ghSettings) {
-    try {
-      const newSha = await ghPushFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path, encrypted, _ghSha);
-      _ghSha = newSha;
-      localStorage.setItem(GH_SHA_KEY, newSha);
-      _ghSyncState = {state:'ok', at:Date.now()};
-      _notifySync && _notifySync();
-      pushCrmSummary(data, _ghSettings).catch(()=>{});
-    } catch(e) {
-      _ghSyncState = {state:'error', message:e.message, at:Date.now()};
-      _notifySync && _notifySync();
+    let attempt = 0;
+    while (attempt < 2) {
+      attempt++;
+      try {
+        const newSha = await ghPushFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path, encrypted, _ghSha);
+        _ghSha = newSha;
+        localStorage.setItem(GH_SHA_KEY, newSha);
+        _ghSyncState = {state:'ok', at:Date.now()};
+        _notifySync && _notifySync();
+        pushCrmSummary(data, _ghSettings).catch(()=>{});
+        return;
+      } catch(e) {
+        if (e.message === 'CONFLICT' && attempt === 1) {
+          // 409 — version changed on server. Refetch to compare timestamps.
+          try {
+            const fetched = await ghFetchFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path);
+            if (fetched.content) {
+              const cloudDec = await aesDecrypt(key, fetched.content);
+              const cloudTs = cloudDec._savedAt || 0;
+              if (cloudTs > dataWithTs._savedAt) {
+                // Server has NEWER data than what we're saving — refuse, keep local
+                // until user resolves manually. Local edits are still in DATA_KEY.
+                _ghSyncState = {state:'conflict_newer_on_server', message:'Server hat neuere Daten (anderes Gerät). Bitte Seite neu laden.', at:Date.now()};
+                _notifySync && _notifySync();
+                return;
+              }
+              // Our edits are newer (or equal) — bump our version pointer and retry
+              _ghSha = fetched.sha;
+              localStorage.setItem(GH_SHA_KEY, fetched.sha);
+              continue;
+            }
+          } catch(refetchErr) { /* fall through to error */ }
+        }
+        _ghSyncState = {state:'error', message:e.message, at:Date.now()};
+        _notifySync && _notifySync();
+        return;
+      }
     }
   }
 }
@@ -626,19 +653,44 @@ async function loadEncrypted(key) {
       const fetched = await ghFetchFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path);
       if (fetched.content) {
         // CRITICAL: decrypt BEFORE updating _ghSha. If the key doesn't match the
-        // cloud blob, we MUST NOT update version state — otherwise a subsequent
-        // save would PUT with the matched version and overwrite cloud data
-        // (silent data loss for users who logged in with the wrong key).
+        // cloud blob, we MUST NOT update version state.
         let decrypted;
         try {
           decrypted = await aesDecrypt(key, fetched.content);
         } catch(decErr) {
-          // Key mismatch — leave _ghSha untouched so optimistic locking blocks future saves
           _ghSyncState = {state:'key_mismatch', message:'Server-Daten konnten mit deinem aktuellen Schlüssel nicht entschlüsselt werden. Anmeldung mit falschem Passwort? Bitte ausloggen.', at:Date.now()};
           _notifySync && _notifySync();
           throw new Error('KEY_MISMATCH');
         }
-        // Decryption succeeded — NOW commit version + cache
+        // BUG #4 FIX: compare timestamps before overwriting local with server data.
+        // If local has newer unsaved edits (e.g. a previous PUT failed with 409),
+        // we must NOT overwrite them with the older server version.
+        const cloudTs = decrypted._savedAt || 0;
+        let useLocal = false;
+        const localRaw = localStorage.getItem(DATA_KEY);
+        if (localRaw && cloudTs > 0) {
+          try {
+            const localBlob = JSON.parse(localRaw);
+            const localDec = await aesDecrypt(key, localBlob);
+            const localTs = localDec._savedAt || 0;
+            if (localTs > cloudTs) {
+              // Local is newer — keep local data, but DO update _ghSha so the next
+              // save uses the correct version (the upcoming PUT will then overwrite
+              // the older server version). This propagates pending local edits.
+              useLocal = true;
+              _ghSha = fetched.sha;
+              localStorage.setItem(GH_SHA_KEY, fetched.sha);
+              _ghSyncState = {state:'pending_push', message:'Lokale Änderungen warten auf Sync.', at:Date.now()};
+              _notifySync && _notifySync();
+              console.log('[loadEncrypted] local is newer than cloud — keeping local edits');
+              return localDec;
+            }
+          } catch(e) { /* local unreadable — fall through to use cloud */ }
+        }
+        // Cloud is newer or no local — backup current local then commit cloud
+        if (localRaw) {
+          try { localStorage.setItem(DATA_BACKUP_KEY, localRaw); } catch(e){}
+        }
         _ghSha = fetched.sha;
         localStorage.setItem(GH_SHA_KEY, fetched.sha);
         localStorage.setItem(DATA_KEY, JSON.stringify(fetched.content));
@@ -647,15 +699,13 @@ async function loadEncrypted(key) {
         _notifySync && _notifySync();
         return decrypted;
       } else {
-        // Server has no content yet — safe to update SHA pointer
         _ghSha = fetched.sha;
         localStorage.setItem(GH_SHA_KEY, fetched.sha);
       }
     } catch(e) {
-      if (e.message === 'KEY_MISMATCH') throw e; // propagate for caller to handle
+      if (e.message === 'KEY_MISMATCH') throw e;
       _ghSyncState = {state:'error', message:e.message, at:Date.now()};
       _notifySync && _notifySync();
-      // Cloud offline — _ghSha stays valid from localStorage
     }
   }
   const raw = localStorage.getItem(DATA_KEY);

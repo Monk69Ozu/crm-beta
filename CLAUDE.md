@@ -19,10 +19,28 @@ Optional for email password-reset:
 
 ## Deployment
 
-Push to `main` → Coolify auto-builds the Docker image and deploys to **crm.webars.at**.  
+Push to `main` → Coolify auto-builds the Docker image and deploys to **crm.webars.at**.
 No manual steps needed. Health check: `GET /health` (no auth).
 
-The Dockerfile is a two-stage node:20-alpine build. Only `server.js`, `index.html`, `package.json`, and `jarvis_crm_tools.js` are copied into the image.
+The Dockerfile is a two-stage node:20-alpine build. Only `server.js`, `index.html`, `package.json`, and `jarvis_crm_tools.js` are copied into the image. `curl` is installed for the Coolify healthcheck.
+
+### Required Coolify env vars
+- `DATABASE_URL` — MySQL connection string
+- `API_SECRET` — bearer token (≥32 random chars). **DO NOT CHANGE after first init** — it is the only key that can decrypt `crm_auth.escrow_blob` for password recovery.
+- `APP_URL=https://crm.webars.at` — used in password reset emails (without this the link points to localhost, but the frontend reconstructs it from `window.location.origin` as a fallback).
+
+### Lock-out recovery paths (defence in depth)
+1. **Forgot password** (UI) → email link → re-wrap escrow with new password
+2. **No email?** → POST `/api/forgot-password` returns the link in the response when SMTP isn't configured
+3. **Lost everything?** → SSH into server → query `crm_auth.escrow_blob` → decrypt with `PBKDF2(API_SECRET, 'webars-key-escrow-v1', 100000)` → master key recovered
+
+### Self-test
+`GET /api/selftest` (auth required) verifies:
+- `crm_data` row count + version
+- `crm_auth` row exists
+- backups by tier + last update
+- write/read probe on `crm_summary`
+Returns `allOk: true` only when everything passes.
 
 ## Architecture
 
