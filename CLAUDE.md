@@ -38,17 +38,34 @@ window.WEBARS_API_TOKEN = "<API_SECRET>";
 ```
 Frontend code checks `const SELF_HOSTED = !!window.WEBARS_SELF_HOSTED` to branch between self-hosted (MySQL via API) and the legacy GitHub Pages mode.
 
-### Client-side encryption (AES-256-GCM)
-All CRM data is encrypted in the browser before being sent to or stored on the server. The server only ever sees opaque encrypted blobs.
+### Client-side encryption (AES-256-GCM) — auth-blob model
+All CRM data is encrypted in the browser. Server only sees opaque blobs.
 
-Key hierarchy:
-1. **Master key** — random AES-256-GCM key, never leaves the browser unencrypted.
-2. **Wrap key** — derived from the user's password via PBKDF2 (210 000 iterations, SHA-256, per-device random salt stored in `localStorage`).
-3. The master key is stored in `localStorage` encrypted by the wrap key (`MASTER_KEY_STORE`). A `VERIFY_KEY` blob lets `verifyPassword()` confirm the correct password without decrypting data.
+**Single source of truth: `crm_auth` table (one row, id=1) on the server.**
+Same password works on every device, forever — no per-device localStorage salt.
 
-**Key escrow** — on every successful login `escrowMasterKey()` encrypts the master key with a key derived from `window.WEBARS_API_TOKEN` (PBKDF2, salt `'webars-key-escrow-v1'`, 100 000 iterations) and stores it at `PUT /api/key-escrow`. The "Passwort vergessen" flow fetches this blob and re-wraps it with the new password — no data loss even after a forgotten password.
+Columns:
+- `salt` — base64 PBKDF2 salt (32 random bytes), GLOBAL
+- `wrapped_master` — `{iv, data}` master key encrypted with `PBKDF2(password, salt, 600k)`
+- `escrow_blob` — `{iv, data}` master key encrypted with `PBKDF2(API_SECRET, 'webars-key-escrow-v1', 100k)` — used only by the password-reset email flow
+- `pbkdf2_iter` — iteration count (default 600 000)
 
-**Auto-login** — the raw master key is stored in `sessionStorage` as base64 (`DEVICE_KEY_STORE`). It is imported as `extractable: true` so it can be re-exported for escrow/rewrap operations.
+**Login flow (self-hosted):**
+1. `GET /api/auth-blob` → `{salt, wrapped_master, pbkdf2_iter}`
+2. `wrap_key = PBKDF2(password, salt, iter)`
+3. `master_key = AES-decrypt(wrap_key, wrapped_master)`
+
+**Password change:** re-wrap master with new password → `PUT /api/auth-blob` with new `wrapped_master`. Salt + escrow stay (master key never changes).
+
+**Forgot password:** `POST /api/forgot-password` → email link with token → frontend gets `{salt, escrow_blob, pbkdf2_iter}` → derives escrow key from `WEBARS_API_TOKEN` → decrypts escrow → re-wraps with new password → `POST /api/reset-token/:t/confirm` with new `wrapped_master` (atomic update + token consumption).
+
+**Auto-migration:** if a device has local `MASTER_KEY_STORE`+`SALT_KEY` but server `crm_auth` is empty, `ensureServerAuthMigrated()` pushes the local master key + a fresh salt to the server on next successful `verifyPassword`.
+
+**Local cache** — `SALT_KEY`, `VERIFY_KEY`, `MASTER_KEY_STORE` are kept in `localStorage` purely for offline reads after a successful online login. Server is always source of truth.
+
+**Auto-login** — raw master key still stored in `sessionStorage` (`DEVICE_KEY_STORE`) for fast unlock on the same device.
+
+**Legacy:** `crm_key_escrow` table + `/api/key-escrow` endpoints are kept for read-only fallback (old reset tokens). New code never writes to them.
 
 ### State management
 `CRMApp` holds a single `state` object. The `upd(patch)` helper shallow-merges a patch and triggers an auto-save via `useEffect → saveEncrypted`. The encrypted blob is written to `localStorage` and synced to `PUT /api/data` with optimistic locking (`version` field).
@@ -71,32 +88,37 @@ String constants (`TODOS_VIEW`, `AI_VIEW`, `CLAUDE_VIEW`, `QUOTES_VIEW`, `INVOIC
 ### MySQL tables
 | Table | Purpose |
 |---|---|
+| `crm_auth` | **NEW** Source-of-truth auth row (id=1): salt + wrapped_master + escrow_blob + iter |
 | `crm_data` | Single encrypted blob (id=1), optimistic lock via `version BIGINT` |
-| `crm_key_escrow` | Master key encrypted with API_SECRET-derived key (id=1) |
+| `crm_key_escrow` | LEGACY — read-only fallback for old reset tokens (id=1) |
 | `password_resets` | One-time tokens for the "Passwort vergessen" flow (expire after 1 h) |
 | `recovery_blobs` | Legacy recovery by email hash (no auth — content is client-encrypted) |
 | `form_definitions` | Public intake forms (slug → content) |
 | `crm_summary` | Plain-text summary for the Jarvis API (id=1) |
-| `crm_backups` | Daily snapshots at 02:00 UTC, max 30 kept |
+| `crm_backups` | **APPEND-ONLY** snapshots with `tier` column. Tiers: `hourly` (48), `daily` (90), `weekly` (104), `manual` (∞), `pre-restore` (∞), `legacy` (∞). Per-tier retention only. |
 
 ### API routes (all require `Authorization: Bearer <API_SECRET>` unless noted)
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/health` | none | dbReady flag |
 | GET | `/api/debug-auth` | none | Diagnose token mismatches |
+| GET | `/api/auth-blob` | none | Returns `{exists, salt, wrapped_master, pbkdf2_iter}` — public so login form can fetch salt |
+| POST | `/api/auth-blob/init` | yes | One-time setup. Refuses 409 if row exists |
+| PUT | `/api/auth-blob` | yes | Update `wrapped_master` (password change) |
 | GET/PUT | `/api/data` | yes | Encrypted CRM blob |
 | GET/PUT | `/api/recovery/:hash` | none | Recovery blob |
 | GET | `/forms/:slug` | none | Public form |
 | PUT/DELETE | `/api/forms/:slug` | yes | Manage forms |
 | GET/PUT | `/api/summary` | none/yes | Jarvis summary |
-| GET/POST | `/api/backups` | yes | List / trigger backup |
+| GET/POST | `/api/backups` | yes | List (up to 500) / trigger manual backup |
 | GET | `/api/backups/:id` | yes | Download backup |
-| GET/PUT | `/api/key-escrow` | yes | Password-reset escrow |
-| POST | `/api/forgot-password` | none | Generate reset token |
-| GET | `/api/reset-token/:token` | none | Validate token, return escrow blob |
-| POST | `/api/reset-token/:token/confirm` | none | Mark token used |
-| POST | `/api/import` | yes | Import encrypted blob |
-| POST | `/api/admin/reset` | yes | ⚠ Wipe all CRM data |
+| POST | `/api/backups/:id/restore` | yes | **Atomic snapshot-then-restore**. Always creates a `pre-restore` backup of current state first |
+| GET/PUT | `/api/key-escrow` | yes | LEGACY — kept for old reset tokens only |
+| POST | `/api/forgot-password` | none | Generate reset token, email link |
+| GET | `/api/reset-token/:token` | none | Returns `{scheme:'auth-blob-v1', salt, escrow, pbkdf2_iter}` (or `scheme:'legacy'`) |
+| POST | `/api/reset-token/:token/confirm` | none | Body: `{wrapped_master}`. Atomically updates `crm_auth` + marks token used |
+| POST | `/api/import` | yes | Import encrypted blob (legacy migration) |
+| POST | `/api/admin/reset` | yes | ⛔ **PERMANENTLY DISABLED** — returns 410 |
 
 ### Styles
 - CSS variables defined in `:root` — dark sidebar `#0F0E0C`, warm background `#F3F0EB`.

@@ -149,13 +149,133 @@ const fromB64 = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 const b64encode = str => btoa(unescape(encodeURIComponent(str)));
 const b64decode = b64 => decodeURIComponent(escape(atob(b64.replace(/\s/g,''))));
 
-async function deriveKey(password, salt) {
+async function deriveKey(password, salt, iterations) {
   const enc = new TextEncoder();
   const raw = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
-    { name:'PBKDF2', salt, iterations:210000, hash:'SHA-256' },
+    { name:'PBKDF2', salt, iterations: iterations || 210000, hash:'SHA-256' },
     raw, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
   );
+}
+
+// ─── NEW SERVER-BACKED AUTH (auth-blob model) ───────────────────
+// Source of truth is the server's crm_auth row. Same password works on EVERY
+// device because salt+wrapped_master live on the server, not in localStorage.
+const PBKDF2_ITER_NEW = 600000;
+
+async function fetchServerAuthBlob() {
+  if (!SELF_HOSTED) return null;
+  try {
+    const r = await fetch('/api/auth-blob', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.exists ? j : { exists: false };
+  } catch(e) { console.warn('fetchServerAuthBlob:', e.message); return null; }
+}
+
+async function serverHasAuth() {
+  const ab = await fetchServerAuthBlob();
+  return !!(ab && ab.exists);
+}
+
+async function setupPasswordServer(password, providedMasterKeyB64 = null) {
+  // 1) Generate fresh salt + master key
+  const saltBytes = crypto.getRandomValues(new Uint8Array(32));
+  const saltB64 = toB64(saltBytes);
+  const masterKey = providedMasterKeyB64
+    ? await importMasterKeyFromB64(providedMasterKeyB64)
+    : await generateMasterKey();
+  const masterB64 = await exportMasterKeyB64(masterKey);
+  // 2) Wrap master with PBKDF2(password, salt, 600k)
+  const wrapKey = await deriveKey(password, saltBytes, PBKDF2_ITER_NEW);
+  const wrapped_master = await aesEncrypt(wrapKey, masterB64);
+  // 3) Build escrow blob (master encrypted with API_SECRET-derived key)
+  const escrowKey = await deriveEscrowKey();
+  const escrow_blob = await aesEncrypt(escrowKey, masterB64);
+  // 4) POST to /api/auth-blob/init — refuses if already exists (safety)
+  const r = await fetch('/api/auth-blob/init', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${window.WEBARS_API_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ salt: saltB64, wrapped_master, escrow_blob, pbkdf2_iter: PBKDF2_ITER_NEW })
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(()=>({}));
+    if (j.error === 'AUTH_ALREADY_EXISTS') throw new Error('AUTH_ALREADY_EXISTS');
+    throw new Error('Setup failed: ' + (j.error || r.status));
+  }
+  // 5) Cache locally (useful for offline reads only; server remains source of truth)
+  localStorage.setItem(SALT_KEY, saltB64);
+  localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+  localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(wrapped_master));
+  return masterKey;
+}
+
+async function verifyPasswordServer(password) {
+  const ab = await fetchServerAuthBlob();
+  if (!ab || !ab.exists) return { status: 'no-server-auth' };
+  try {
+    const saltBytes = fromB64(ab.salt);
+    const wrapKey = await deriveKey(password, saltBytes, ab.pbkdf2_iter || PBKDF2_ITER_NEW);
+    const masterB64 = await aesDecrypt(wrapKey, ab.wrapped_master);
+    const masterKey = await importMasterKeyFromB64(masterB64);
+    // Refresh local cache
+    localStorage.setItem(SALT_KEY, ab.salt);
+    localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+    localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(ab.wrapped_master));
+    return { status: 'ok', masterKey };
+  } catch(e) {
+    return { status: 'wrong-password' };
+  }
+}
+
+// Change password by re-wrapping master and PUTing new wrapped_master to server.
+// Salt + escrow stay the same — master key itself never changes.
+async function changePasswordServer(masterKey, newPassword) {
+  const ab = await fetchServerAuthBlob();
+  if (!ab || !ab.exists) throw new Error('Kein Server-Auth — bitte zuerst Setup machen');
+  const saltBytes = fromB64(ab.salt);
+  const iter = ab.pbkdf2_iter || PBKDF2_ITER_NEW;
+  const wrapKey = await deriveKey(newPassword, saltBytes, iter);
+  const masterB64 = await exportMasterKeyB64(masterKey);
+  const wrapped_master = await aesEncrypt(wrapKey, masterB64);
+  const r = await fetch('/api/auth-blob', {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${window.WEBARS_API_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ wrapped_master })
+  });
+  if (!r.ok) { const j = await r.json().catch(()=>({})); throw new Error('Passwort-Update fehlgeschlagen: ' + (j.error || r.status)); }
+  // Refresh local cache so offline reads still work
+  localStorage.setItem(SALT_KEY, ab.salt);
+  localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+  localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(wrapped_master));
+}
+
+// Auto-migrate: if local password works but no server auth-blob exists, push it up.
+async function ensureServerAuthMigrated(password, masterKey) {
+  if (!SELF_HOSTED || !window.WEBARS_API_TOKEN) return;
+  try {
+    const ab = await fetchServerAuthBlob();
+    if (ab && ab.exists) return; // already migrated
+    // Build new auth blob from current master key + this password
+    const saltBytes = crypto.getRandomValues(new Uint8Array(32));
+    const saltB64 = toB64(saltBytes);
+    const wrapKey = await deriveKey(password, saltBytes, PBKDF2_ITER_NEW);
+    const masterB64 = await exportMasterKeyB64(masterKey);
+    const wrapped_master = await aesEncrypt(wrapKey, masterB64);
+    const escrowKey = await deriveEscrowKey();
+    const escrow_blob = await aesEncrypt(escrowKey, masterB64);
+    const r = await fetch('/api/auth-blob/init', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${window.WEBARS_API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ salt: saltB64, wrapped_master, escrow_blob, pbkdf2_iter: PBKDF2_ITER_NEW })
+    });
+    if (r.ok) {
+      console.log('[migration] Pushed local auth → server auth-blob');
+      localStorage.setItem(SALT_KEY, saltB64);
+      localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+      localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(wrapped_master));
+    }
+  } catch(e) { console.warn('[migration] failed:', e.message); }
 }
 async function aesEncrypt(key, obj) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -330,19 +450,21 @@ async function importMasterKeyFromB64(b64) {
 }
 
 async function setupPassword(password, providedMasterKeyB64 = null) {
-  // Reset salt to ensure fresh setup on new device
+  // ── Self-hosted: server auth-blob is source of truth ──
+  if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+    return setupPasswordServer(password, providedMasterKeyB64);
+  }
+  // ── Legacy local-only path (GitHub Pages mode) ──
   localStorage.removeItem(SALT_KEY);
   const salt = getSalt();
   const wrapKey = await deriveKey(password, salt);
-  // Verify string encrypted with wrapping key
   localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
-  // Master key: imported (member/cloud-recovery) or freshly generated (owner)
   const masterKey = providedMasterKeyB64
     ? await importMasterKeyFromB64(providedMasterKeyB64)
     : await generateMasterKey();
   const masterB64 = await exportMasterKeyB64(masterKey);
   localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(await aesEncrypt(wrapKey, masterB64)));
-  return masterKey; // master key is the actual encryption key for all data
+  return masterKey;
 }
 
 // Re-encrypt master key with NEW password (for password change / reset)
@@ -429,8 +551,21 @@ async function saveCloudRecovery(email, password, recoveryCode, masterKey, ghSet
 }
 
 async function verifyPassword(password) {
-  const salt = getSalt();
-  if (!salt) { console.error('[auth] No salt in localStorage'); return null; }
+  // ── Self-hosted: try server auth-blob first (source of truth) ──
+  if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+    const r = await verifyPasswordServer(password);
+    if (r.status === 'ok') {
+      // No legacy-escrow update here: the new crm_auth row already contains
+      // an escrow_blob and the master key never changes after init.
+      return r.masterKey;
+    }
+    if (r.status === 'wrong-password') return null;
+    // status === 'no-server-auth' → fall through to local + auto-migrate
+  }
+  // ── Legacy local path (also used for migration from pre-auth-blob installs) ──
+  const localSaltB64 = localStorage.getItem(SALT_KEY);
+  if (!localSaltB64) { console.error('[auth] No salt in localStorage'); return null; }
+  const salt = fromB64(localSaltB64);
   const wrapKey = await deriveKey(password, salt);
   try {
     const verifyRaw = localStorage.getItem(VERIFY_KEY);
@@ -442,7 +577,12 @@ async function verifyPassword(password) {
     const mkRaw = localStorage.getItem(MASTER_KEY_STORE);
     if (!mkRaw) { console.error('[auth] MASTER_KEY_STORE missing'); return null; }
     const mkB64 = await aesDecrypt(wrapKey, JSON.parse(mkRaw));
-    return await importMasterKeyFromB64(mkB64);
+    const masterKey = await importMasterKeyFromB64(mkB64);
+    // Auto-migrate to server auth-blob (one-shot, idempotent)
+    if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+      ensureServerAuthMigrated(password, masterKey).catch(()=>{});
+    }
+    return masterKey;
   } catch(e) { console.error('[auth] verifyPassword failed:', e.message); return null; }
 }
 
@@ -1171,7 +1311,14 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
         try { await storeKeyForDevice(key); } catch(e) {}
         onDone(key, data || DEFAULT_STATE, OWNER_EMAIL);
       }
-    } catch(e) { setErr('Fehler. Bitte erneut versuchen.'); }
+    } catch(e) {
+      if (e && /AUTH_ALREADY_EXISTS/.test(e.message||'')) {
+        setErr('Es existiert bereits ein Konto am Server. Bitte stattdessen anmelden.');
+        if (onSwitchMode) setTimeout(onSwitchMode, 1500);
+      } else {
+        setErr('Fehler. Bitte erneut versuchen.');
+      }
+    }
     setBusy(false);
   };
 
@@ -1376,11 +1523,34 @@ function ResetPasswordScreen({token}) {
       const r=await fetch(`/api/reset-token/${encodeURIComponent(token)}`);
       if(!r.ok){const j=await r.json();setErr(j.error||'Token ungültig oder abgelaufen.');setBusy(false);return;}
       const j=await r.json();
-      const masterKey=await unescrowMasterKey(j.escrow);
-      await rewrapMasterKey(masterKey,pw);
+
+      // Decrypt the escrow blob with API_SECRET-derived key → master key (b64)
+      const escrowKey = await deriveEscrowKey();
+      const masterB64 = await aesDecrypt(escrowKey, j.escrow);
+      const masterKey = await importMasterKeyFromB64(masterB64);
+
+      if (j.scheme === 'auth-blob-v1') {
+        // NEW model: re-wrap with new password using SERVER salt + iter, send back atomically
+        const saltBytes = fromB64(j.salt);
+        const iter = j.pbkdf2_iter || 600000;
+        const wrapKey = await deriveKey(pw, saltBytes, iter);
+        const wrapped_master = await aesEncrypt(wrapKey, masterB64);
+        const cr = await fetch(`/api/reset-token/${encodeURIComponent(token)}/confirm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ wrapped_master })
+        });
+        if (!cr.ok) { const cj = await cr.json().catch(()=>({})); throw new Error(cj.error || 'Confirm fehlgeschlagen'); }
+        // Refresh local cache
+        localStorage.setItem(SALT_KEY, j.salt);
+        localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
+        localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(wrapped_master));
+      } else {
+        // LEGACY scheme: re-wrap locally and confirm (will trigger auto-migrate on next login)
+        await rewrapMasterKey(masterKey, pw);
+        await fetch(`/api/reset-token/${encodeURIComponent(token)}/confirm`, { method: 'POST' });
+      }
       try{await storeKeyForDevice(masterKey);}catch(e){}
-      await fetch(`/api/reset-token/${encodeURIComponent(token)}/confirm`,{method:'POST'});
-      // Clean URL
       window.history.replaceState({},'','/');
       setDone(true);
     }catch(e){setErr('Fehler: '+e.message);}
@@ -1438,9 +1608,13 @@ function ChangePasswordModal({cryptoKey,onClose}){
       // NOT the cryptoKey prop which may be non-extractable (e.g. after auto-login)
       const verifiedKey=await verifyPassword(curPw);
       if(!verifiedKey){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
-      await rewrapMasterKey(verifiedKey,newPw);
+      // In self-hosted mode: re-wrap on server (source of truth)
+      if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+        await changePasswordServer(verifiedKey, newPw);
+      } else {
+        await rewrapMasterKey(verifiedKey, newPw);
+      }
       try{await storeKeyForDevice(verifiedKey);}catch(e){}
-      try{await escrowMasterKey(verifiedKey);}catch(e){}
       setDone(true);
     }catch(e){setErr('Fehler: '+e.message);}
     setBusy(false);
@@ -1964,10 +2138,11 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         return;
       }
       if (SELF_HOSTED) {
-        const r = await fetch('/api/import', {
+        // Use server-side restore endpoint: atomically snapshots current data
+        // (as tier='pre-restore' backup, kept forever) before overwriting crm_data.
+        const r = await fetch(`/api/backups/${backup.id}/restore`, {
           method:'POST',
-          headers:{Authorization:`Bearer ${s.token}`,'Content-Type':'application/json'},
-          body: JSON.stringify({encryptedData: content})
+          headers:{Authorization:`Bearer ${s.token}`,'Content-Type':'application/json'}
         });
         if (!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(`Restore fehlgeschlagen: ${e.error||r.status}`); }
         const j = await r.json();
@@ -1978,7 +2153,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         const newSha = await ghPushFile(s.token, s.repo||'', s.path||'', content, fetched.sha, `Restore from backup ${backup.name||backup.id}`);
         _ghSha = newSha;
       }
-      setBackupInfo('✓ Wiederhergestellt — bitte Seite neu laden.');
+      setBackupInfo('✓ Wiederhergestellt (Vorzustand als Pre-Restore-Snapshot gesichert) — bitte Seite neu laden.');
     } catch(e) { setBackupErr(e.message); }
     setBackupBusy(false);
   };
@@ -7447,14 +7622,19 @@ function AuthWrapper(){
     }catch(e){}
     // Try auto-login with stored device key (no password needed on same device)
     (async()=>{
-      if(hasSetup() && localStorage.getItem(PKEY_ENC_STORE)){
+      // Determine if any auth exists (server is source of truth in self-hosted mode)
+      let serverAuth = false;
+      if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+        try { serverAuth = await serverHasAuth(); } catch(e) {}
+      }
+      const anyAuth = serverAuth || hasSetup();
+
+      if(anyAuth && localStorage.getItem(PKEY_ENC_STORE)){
         try{
           const dk = await getOrCreateDeviceKey();
           const b64key = await aesDecrypt(dk, JSON.parse(localStorage.getItem(PKEY_ENC_STORE)));
-          // extractable:true so escrowMasterKey and storeKeyForDevice work correctly
           const key = await crypto.subtle.importKey('raw',fromB64(b64key),{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
           if(key){
-            // Load GitHub settings first (so loadEncrypted can fetch from GitHub)
             if(hasGithubSettings()){
               try{ await loadGithubSettings(key); }catch(e){}
             }
@@ -7464,15 +7644,24 @@ function AuthWrapper(){
           }
         }catch(e){ console.warn('[auto-login] failed:', e); }
       }
-      setPhase(hasSetup()?'login':'setup');
+      setPhase(anyAuth?'login':'setup');
     })();
   },[]);
 
   const handleReset=()=>{
-    if(!window.confirm(`Alle verschlüsselten Daten unwiderruflich löschen?\n\nWiederherstellungskontakt: ${RECOVERY_EMAIL}`))return;
+    // In self-hosted mode the server holds the canonical auth + data.
+    // This button only clears the LOCAL CACHE — it no longer destroys server data.
+    // The user can always log back in with their password.
+    if(SELF_HOSTED){
+      if(!window.confirm('Lokalen Cache leeren?\n\nDeine Daten am Server bleiben sicher. Du musst dich danach mit deinem Passwort neu anmelden.'))return;
+    } else {
+      if(!window.confirm(`Alle lokalen Daten löschen?\n\nWiederherstellungskontakt: ${RECOVERY_EMAIL}`))return;
+    }
     [SALT_KEY,VERIFY_KEY,TOTP_KEY,DATA_KEY,EMAIL_HASH_KEY,INVITES_KEY,DEVICE_KEY_STORE,TOTP_ENC_STORE,PKEY_ENC_STORE,GH_SETTINGS_KEY,MASTER_KEY_STORE].forEach(k=>localStorage.removeItem(k));
     clearGithubSettings();
-    setPhase('setup');
+    // In self-hosted mode, server auth-blob still exists → go to login, NOT setup
+    if(SELF_HOSTED) { setPhase('login'); }
+    else { setPhase('setup'); }
   };
 
   const handleLogout=()=>{
