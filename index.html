@@ -1712,10 +1712,11 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
       if (!canDecrypt) {
         // Key mismatch — ask for old password instead of hard-failing.
         // Auto-read local salt+masterKey if still in localStorage (password-only flow).
-        const localSalt = getSalt();
+        const localSaltBytes = getSalt();
         const localMasterEncRaw = localStorage.getItem(MASTER_KEY_STORE);
-        if (localSalt && localMasterEncRaw) {
-          setMigratePending({encryptedData: content, localSalt, localMasterEncKey: JSON.parse(localMasterEncRaw), fromServerBackup: true});
+        if (localSaltBytes && localMasterEncRaw) {
+          // Store salt as b64 so it survives JSON serialisation in React state
+          setMigratePending({encryptedData: content, localSalt: toB64(localSaltBytes), localMasterEncKey: JSON.parse(localMasterEncRaw), fromServerBackup: true});
         } else {
           // localStorage cleared — fall back to manual console-extract flow
           setMigratePending({encryptedData: content, fromServerBackup: true});
