@@ -148,14 +148,18 @@ async function initDb() {
         PRIMARY KEY (token)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
-    // Add 'used' column to password_resets if it was created by an older version
-    const [usedColRows] = await conn.query(`
-      SELECT COUNT(*) AS cnt FROM information_schema.columns
-      WHERE table_schema = DATABASE() AND table_name = 'password_resets' AND column_name = 'used'
-    `);
-    if (usedColRows[0].cnt === 0) {
+    // Add 'used' column to password_resets if it was created by an older version.
+    // Try the ALTER directly and ignore "Duplicate column" errors — works on every MySQL/MariaDB version.
+    try {
       await conn.query(`ALTER TABLE password_resets ADD COLUMN used TINYINT(1) NOT NULL DEFAULT 0`);
       console.log('✓ Migrated password_resets: added used column');
+    } catch(e) {
+      if (/Duplicate column/i.test(e.message)) {
+        console.log('✓ password_resets.used already exists');
+      } else {
+        console.error('⚠ password_resets migration failed:', e.message);
+        throw e;
+      }
     }
     // ── NEW UNIFIED AUTH TABLE ─────────────────────────────────────
     // Single row (id=1). Contains everything needed to log in from ANY device
