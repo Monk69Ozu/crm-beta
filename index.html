@@ -5422,7 +5422,7 @@ function CampaignsView({campaigns, onUpdate}){
     openCamp(c);
   };
   const deleteCamp=id=>{
-    if(!confirm('Kampagne und alle Dateien darin löschen?'))return;
+    if(!confirm('Mappe und alle Dateien darin löschen?'))return;
     onUpdate((campaigns||[]).filter(c=>c.id!==id));
     if(selCamp===id)goBack();
   };
@@ -5458,7 +5458,7 @@ function CampaignsView({campaigns, onUpdate}){
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
       <div style={{padding:'10px 28px',background:'white',borderBottom:'1px solid rgba(0,0,0,0.07)',display:'flex',gap:10,alignItems:'center',flexShrink:0}}>
         <div style={{flex:1}}/>
-        <button className="btn btn-primary" onClick={()=>{setAddingCamp(true);setNewCampName('');setNewCampEmoji('💡');}}><Icons.Plus/>Neue Kampagne</button>
+        <button className="btn btn-primary" onClick={()=>{setAddingCamp(true);setNewCampName('');setNewCampEmoji('📁');}}><Icons.Plus/>Neue Mappe</button>
       </div>
 
       {addingCamp&&(
@@ -5485,9 +5485,9 @@ function CampaignsView({campaigns, onUpdate}){
         {(campaigns||[]).length===0&&!addingCamp?(
           <div style={{textAlign:'center',padding:'80px 20px',color:'#C8C3BD'}}>
             <div style={{fontSize:52,marginBottom:16,opacity:.4}}>💡</div>
-            <div style={{fontSize:16,fontWeight:600,color:'#C0BBB5',marginBottom:8}}>Noch keine Kampagnen</div>
-            <div style={{fontSize:13,lineHeight:1.6,marginBottom:24}}>Erstelle deine erste Kampagne oder Ideen-Sammlung.<br/>Jede Kampagne ist ein Ordner mit beliebig vielen Dateien.</div>
-            <button className="btn btn-primary" onClick={()=>{setAddingCamp(true);setNewCampName('');setNewCampEmoji('💡');}}><Icons.Plus/>Erste Kampagne erstellen</button>
+            <div style={{fontSize:16,fontWeight:600,color:'#C0BBB5',marginBottom:8}}>Noch keine Notizen</div>
+            <div style={{fontSize:13,lineHeight:1.6,marginBottom:24}}>Erstelle deine erste Mappe für Notizen, Ideen oder Dokumente.<br/>Jede Mappe enthält beliebig viele Seiten mit Block-Editor.</div>
+            <button className="btn btn-primary" onClick={()=>{setAddingCamp(true);setNewCampName('');setNewCampEmoji('📁');}}><Icons.Plus/>Erste Mappe erstellen</button>
           </div>
         ):(
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:16}}>
@@ -6648,6 +6648,16 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               {open>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{open}</span>}
             </button>
           );})()}
+          {/* Notizen & Ideen (Block-Editor) */}
+          {(()=>{const isActive=activeId===CAMPAIGNS_VIEW;const count=(state.campaigns||[]).length;return(
+            <button onClick={()=>setActiveId(CAMPAIGNS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>📝</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Notizen & Ideen</span>
+              {count>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
+            </button>
+          );})()}
           {/* KI Mitarbeiter */}
           {(()=>{const isActive=activeId===AI_VIEW;const count=(state.aiEmployees||[]).length;return(
             <button onClick={()=>setActiveId(AI_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
@@ -6698,16 +6708,6 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Formulare</span>
               {rcount>0&&<span style={{fontSize:10,fontWeight:700,color:'#22c55e',background:'rgba(34,197,94,.15)',borderRadius:99,padding:'1px 6px'}}>{rcount}</span>}
               {fcount>0&&!rcount&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{fcount}</span>}
-            </button>
-          );})()}
-          {/* Kampagnen & Ideen */}
-          {(()=>{const isActive=activeId===CAMPAIGNS_VIEW;const count=(state.campaigns||[]).length;return(
-            <button onClick={()=>setActiveId(CAMPAIGNS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
-              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
-              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
-              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>💡</span>
-              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Kampagnen & Ideen</span>
-              {count>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
             </button>
           );})()}
           {/* Tokens */}
@@ -6860,8 +6860,8 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
         </>) : activeId === CAMPAIGNS_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
             <div style={{flex:1}}>
-              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>💡 Kampagnen & Ideen</h1>
-              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>{(state.campaigns||[]).length} Kampagnen · {(state.campaigns||[]).reduce((s,c)=>s+(c.files||[]).length,0)} Dateien</div>
+              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>📝 Notizen & Ideen</h1>
+              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>{(state.campaigns||[]).length} Mappen · {(state.campaigns||[]).reduce((s,c)=>s+(c.files||[]).length,0)} Seiten</div>
             </div>
           </div>
           <CampaignsView
