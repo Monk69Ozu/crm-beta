@@ -149,10 +149,14 @@ async function initDb() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     // Add 'used' column to password_resets if it was created by an older version
-    await conn.query(`
-      ALTER TABLE password_resets
-        ADD COLUMN IF NOT EXISTS used TINYINT(1) NOT NULL DEFAULT 0
-    `).catch(()=>{});
+    const [usedColRows] = await conn.query(`
+      SELECT COUNT(*) AS cnt FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = 'password_resets' AND column_name = 'used'
+    `);
+    if (usedColRows[0].cnt === 0) {
+      await conn.query(`ALTER TABLE password_resets ADD COLUMN used TINYINT(1) NOT NULL DEFAULT 0`);
+      console.log('✓ Migrated password_resets: added used column');
+    }
     // ── NEW UNIFIED AUTH TABLE ─────────────────────────────────────
     // Single row (id=1). Contains everything needed to log in from ANY device
     // with the same password. No localStorage state required.
