@@ -345,7 +345,7 @@ async function setupPassword(password, providedMasterKeyB64 = null) {
   return masterKey; // master key is the actual encryption key for all data
 }
 
-// Re-encrypt master key with NEW password (for password reset via recovery code)
+// Re-encrypt master key with NEW password (for password change / reset)
 async function rewrapMasterKey(masterKey, newPassword){
   localStorage.removeItem(SALT_KEY);
   const salt = getSalt();
@@ -353,6 +353,38 @@ async function rewrapMasterKey(masterKey, newPassword){
   localStorage.setItem(VERIFY_KEY, JSON.stringify(await aesEncrypt(wrapKey, VERIFY_STR)));
   const masterB64 = await exportMasterKeyB64(masterKey);
   localStorage.setItem(MASTER_KEY_STORE, JSON.stringify(await aesEncrypt(wrapKey, masterB64)));
+}
+
+// ─── Key Escrow (enables password reset without losing data) ────────
+// Master key is encrypted with an API_SECRET-derived key and stored on the server.
+// This lets us recover the master key after a forgotten password.
+async function deriveEscrowKey() {
+  const enc = new TextEncoder();
+  const raw = await crypto.subtle.importKey(
+    'raw', enc.encode(window.WEBARS_API_TOKEN || ''), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt: enc.encode('webars-key-escrow-v1'), iterations:100000, hash:'SHA-256'},
+    raw, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
+  );
+}
+async function escrowMasterKey(masterKey) {
+  if (!SELF_HOSTED || !window.WEBARS_API_TOKEN) return;
+  try {
+    const escrowKey = await deriveEscrowKey();
+    const rawMk = await crypto.subtle.exportKey('raw', masterKey);
+    const encrypted = await aesEncrypt(escrowKey, toB64(rawMk));
+    await fetch('/api/key-escrow', {
+      method:'PUT',
+      headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`,'Content-Type':'application/json'},
+      body: JSON.stringify(encrypted)
+    });
+  } catch(e) { console.warn('Key escrow update failed:', e); }
+}
+async function unescrowMasterKey(escrowBlob) {
+  const escrowKey = await deriveEscrowKey();
+  const mkB64 = await aesDecrypt(escrowKey, escrowBlob);
+  return importMasterKeyFromB64(mkB64);
 }
 
 // Save recovery blob to cloud (called whenever password OR ghSettings change)
@@ -367,15 +399,20 @@ async function saveCloudRecovery(email, password, recoveryCode, masterKey, ghSet
 
 async function verifyPassword(password) {
   const salt = getSalt();
+  if (!salt) { console.error('[auth] No salt in localStorage'); return null; }
   const wrapKey = await deriveKey(password, salt);
   try {
-    const v = await aesDecrypt(wrapKey, JSON.parse(localStorage.getItem(VERIFY_KEY)));
-    if (v !== VERIFY_STR) return null;
+    const verifyRaw = localStorage.getItem(VERIFY_KEY);
+    if (!verifyRaw) { console.error('[auth] VERIFY_KEY missing'); return null; }
+    let verifyBlob;
+    try { verifyBlob = JSON.parse(verifyRaw); } catch(e) { console.error('[auth] VERIFY_KEY not valid JSON'); return null; }
+    const v = await aesDecrypt(wrapKey, verifyBlob);
+    if (v !== VERIFY_STR) { console.error('[auth] Verify string mismatch — wrong password'); return null; }
     const mkRaw = localStorage.getItem(MASTER_KEY_STORE);
-    if (!mkRaw) return null;
+    if (!mkRaw) { console.error('[auth] MASTER_KEY_STORE missing'); return null; }
     const mkB64 = await aesDecrypt(wrapKey, JSON.parse(mkRaw));
     return await importMasterKeyFromB64(mkB64);
-  } catch(e) { return null; }
+  } catch(e) { console.error('[auth] verifyPassword failed:', e.message); return null; }
 }
 
 async function getMasterKeyB64(masterKey) {
@@ -419,12 +456,13 @@ async function loadEncrypted(key) {
       _ghSha = fetched.sha;
       localStorage.setItem(GH_SHA_KEY, fetched.sha); // persist SHA
       if (fetched.content) {
+        // Decrypt FIRST — only overwrite localStorage after confirmed success
+        const decrypted = await aesDecrypt(key, fetched.content);
         localStorage.setItem(DATA_KEY, JSON.stringify(fetched.content));
-        // Snapshot on every login-load so you always have a fresh restore point
         saveLocalSnapshot(fetched.content); _lastSnapAt = Date.now();
         _ghSyncState = {state:'ok', at:Date.now()};
         _notifySync && _notifySync();
-        return await aesDecrypt(key, fetched.content);
+        return decrypted;
       }
     } catch(e) {
       _ghSyncState = {state:'error', message:e.message, at:Date.now()};
@@ -474,7 +512,10 @@ let _notifySync = null;       // hook for UI updates
 
 function setSyncListener(fn) { _notifySync = fn; }
 function getSyncState() { return _ghSyncState; }
-function hasGithubSettings() { return !!localStorage.getItem(GH_SETTINGS_KEY); }
+function hasGithubSettings() {
+  if (SELF_HOSTED && window.WEBARS_API_TOKEN) return true;
+  return !!localStorage.getItem(GH_SETTINGS_KEY);
+}
 
 async function saveGithubSettings(key, settings) {
   const enc = await aesEncrypt(key, settings);
@@ -482,6 +523,11 @@ async function saveGithubSettings(key, settings) {
   _ghSettings = settings;
 }
 async function loadGithubSettings(key) {
+  // In self-hosted mode the server injects the API token — no manual setup needed
+  if (SELF_HOSTED && window.WEBARS_API_TOKEN) {
+    _ghSettings = {token: window.WEBARS_API_TOKEN, repo: 'self-hosted', path: 'crm_data'};
+    return _ghSettings;
+  }
   const raw = localStorage.getItem(GH_SETTINGS_KEY);
   if (!raw) return null;
   try {
@@ -1044,27 +1090,7 @@ function QRCodeImage({url}) {
 }
 
 // ── TOTP TIMER ───────────────────────────────────────────────────
-function TOTPTimer() {
-  const [secs, setSecs] = useState(30 - (Math.floor(Date.now()/1000) % 30));
-  useEffect(()=>{
-    const id = setInterval(()=>setSecs(30-(Math.floor(Date.now()/1000)%30)),1000);
-    return ()=>clearInterval(id);
-  },[]);
-  const pct = secs/30;
-  const r=11, circ=2*Math.PI*r;
-  return (
-    <div style={{display:'flex',alignItems:'center',gap:6,color:'rgba(255,255,255,0.4)',fontSize:12}}>
-      <svg width="28" height="28" viewBox="0 0 28 28">
-        <circle cx="14" cy="14" r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="2"/>
-        <circle cx="14" cy="14" r={r} fill="none" stroke={secs<=5?'#F87171':'rgba(255,255,255,0.5)'} strokeWidth="2"
-          strokeDasharray={circ} strokeDashoffset={circ*(1-pct)} strokeLinecap="round"
-          style={{transform:'rotate(-90deg)',transformOrigin:'center',transition:'stroke-dashoffset 1s linear'}}/>
-        <text x="14" y="18" textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.5)" fontFamily="monospace">{secs}</text>
-      </svg>
-      Code läuft in {secs}s ab
-    </div>
-  );
-}
+// (TOTPTimer entfernt — Authenticator-Login nicht mehr verwendet)
 
 // ── PASSWORD INPUT ───────────────────────────────────────────────
 function PasswordInput({value,onChange,placeholder,autoFocus,onKeyDown,className}){
@@ -1079,389 +1105,102 @@ function PasswordInput({value,onChange,placeholder,autoFocus,onKeyDown,className
   );
 }
 
-function AuthLogo({subtitle}) {
-  return(
-    <div style={{textAlign:'center',marginBottom:36}}>
-      <img src="logo.png" alt="WebArs" style={{width:68,height:68,borderRadius:'50%',marginBottom:16,boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}/>
-      <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
-      {subtitle && <div style={{fontSize:13,color:'rgba(255,255,255,0.3)',marginTop:4}}>{subtitle}</div>}
-    </div>
-  );
-}
 
-function AuthFooter({extra}) {
-  return(
-    <div style={{marginTop:16,textAlign:'center',display:'grid',gap:6}}>
-      {extra}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,color:'rgba(255,255,255,0.18)',fontSize:11.5}}>
-        <Icons.Shield/> AES-256 · PBKDF2
-        <span style={{opacity:0.4}}>·</span>
-        <Icons.Auth/> Authenticator
-      </div>
-    </div>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════
-//  UNIFIED AUTH SCREEN
-//  Schritte (NEU, vereinfacht):
-//  Setup: 0 = Email + Invite + Passwort kombiniert  →  1 = TOTP (optional, überspringbar)
-//  Login: 0 = Email  →  1 = Passwort ODER TOTP  (TOTP nicht mehr Pflicht)
+//  AUTH SCREEN  — WordPress-Style: nur Passwort, fertig
 // ══════════════════════════════════════════════════════════════════
-function StepDots({current, total}) {
-  return (
-    <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:24}}>
-      {Array.from({length:total}).map((_,i)=>(
-        <div key={i} style={{width: i===current?20:6,height:6,borderRadius:99,background:i===current?'white':i<current?'rgba(255,255,255,0.4)':'rgba(255,255,255,0.15)',transition:'all 0.3s'}}/>
-      ))}
-    </div>
-  );
-}
+function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
+  const isSetup = mode === 'setup';
+  const [email, setEmail] = useState(OWNER_EMAIL || '');
+  const [pw,    setPw]    = useState('');
+  const [pw2,   setPw2]   = useState('');
+  const [err,   setErr]   = useState('');
+  const [busy,  setBusy]  = useState(false);
 
-function AuthScreen({mode, onDone, onReset, onSwitchMode, prefilledInvite}) {
-  // mode: 'setup' | 'login'
-  const isSetup    = mode === 'setup';
-
-  const [step,       setStep]       = useState(0);
-  const [email,      setEmail]      = useState('');
-  const [invite,     setInvite]     = useState(prefilledInvite || '');
-  const [pw,         setPw]         = useState('');
-  const [pw2,        setPw2]        = useState('');
-  const [code,       setCode]       = useState('');
-  const [loginMode,  setLoginMode]  = useState('password');
-  const [err,        setErr]        = useState('');
-  const [busy,       setBusy]       = useState(false);
-  const [shake,      setShake]      = useState(false);
-
-  const [derivedKey,     setDerivedKey]     = useState(null);
-  const [totpSecret,     setTotpSecret]     = useState('');
-  const [otpUrl,         setOtpUrl]         = useState('');
-  const [joinedViaInvite, setJoinedViaInvite] = useState(false);
-
-  const doShake = msg => { setErr(msg); setShake(true); setTimeout(()=>setShake(false), 500); };
-
-  // ── SETUP STEP 0 (combined): Email + (optional invite token) + Password ────────
-  const submitCombinedSetup = async () => {
-    setErr('');
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed.includes('@')) { doShake('Bitte gültige E-Mail-Adresse eingeben.'); return; }
-    if (pw.length < 8)          { doShake('Passwort: mindestens 8 Zeichen.'); return; }
-    if (pw !== pw2)             { doShake('Passwörter stimmen nicht überein.'); return; }
-
-    setBusy(true);
+  const submit = async () => {
+    if (isSetup) {
+      if (!email.trim().includes('@')) { setErr('Bitte gültige E-Mail-Adresse eingeben.'); return; }
+      if (pw.length < 8)              { setErr('Passwort: mindestens 8 Zeichen.'); return; }
+      if (pw !== pw2)                 { setErr('Passwörter stimmen nicht überein.'); return; }
+    }
+    setBusy(true); setErr('');
     try {
-      let masterKeyB64 = null;
-      let importedGhSettings = null;
-
-      // If invite token provided, parse it
-      if (invite.trim()) {
-        const parsed = parseInviteToken(invite.trim());
-        if (!parsed) { doShake('Ungültiger Einladungs-Token.'); setBusy(false); return; }
-        masterKeyB64 = parsed.masterKeyB64;
-        importedGhSettings = parsed.ghSettings;
-      } else if (!SELF_HOSTED && trimmed !== OWNER_EMAIL.toLowerCase()) {
-        doShake('Du benötigst einen Einladungs-Token vom Team-Owner.');
-        setBusy(false); return;
+      if (isSetup) {
+        const trimmed = email.trim().toLowerCase();
+        await storeEmailHash(trimmed);
+        const masterKey = await setupPassword(pw);
+        await saveEncrypted(masterKey, DEFAULT_STATE);
+        try { await storeKeyForDevice(masterKey); } catch(e) {}
+        onDone(masterKey, DEFAULT_STATE, trimmed);
+      } else {
+        const key = await verifyPassword(pw);
+        if (!key) { setErr('Falsches Passwort.'); setBusy(false); return; }
+        const data = await loadEncrypted(key);
+        try { await storeKeyForDevice(key); } catch(e) {}
+        onDone(key, data || DEFAULT_STATE, OWNER_EMAIL);
       }
-
-      await storeEmailHash(trimmed);
-      // setupPassword now generates (owner) or imports (member) the master key
-      const masterKey = await setupPassword(pw, masterKeyB64);
-
-      // If invite carried GitHub settings, store them encrypted with master key
-      if (importedGhSettings) {
-        await saveGithubSettings(masterKey, importedGhSettings);
-      }
-      if (masterKeyB64) setJoinedViaInvite(true);
-
-      const secret = generateTOTPSecret();
-      setDerivedKey(masterKey);
-      setTotpSecret(secret);
-      setOtpUrl(makeOTPAuthURL(secret, trimmed));
-      setStep(1);
-    } catch(e) { console.error(e); setErr('Fehler. Bitte erneut versuchen.'); }
-    setBusy(false);
-  };
-
-  // ── LOGIN STEP 0: Email check ──────────────────────────────────
-  const submitLoginEmail = async () => {
-    setErr(''); setBusy(true);
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed.includes('@')) { setErr('Bitte gültige E-Mail-Adresse eingeben.'); setBusy(false); return; }
-    const ok = await checkEmailHash(trimmed);
-    if (!ok) { doShake('Kein Zugang mit dieser E-Mail-Adresse.'); setBusy(false); return; }
-    setStep(1);
-    setBusy(false);
-  };
-
-  // ── SETUP STEP 1: Confirm TOTP ────────────────────────────────
-  const submitTOTPSetup = async () => {
-    setErr(''); setBusy(true);
-    try {
-      const ok = await verifyTOTP(totpSecret, code);
-      if (!ok) { doShake('Ungültiger Code – bitte erneut versuchen.'); setCode(''); setBusy(false); return; }
-      await saveTOTPSecret(derivedKey, totpSecret);
-      // Only seed initial state for owners; invited members fetch from cloud (don't overwrite team data!)
-      if (!joinedViaInvite) await saveEncrypted(derivedKey, DEFAULT_STATE);
-      await storeTOTPAndKeyForDevice(totpSecret, derivedKey);
-      onDone(derivedKey, DEFAULT_STATE);
     } catch(e) { setErr('Fehler. Bitte erneut versuchen.'); }
     setBusy(false);
   };
 
-  // ── SETUP STEP 1: Skip TOTP ───────────────────────────────────
-  const skipTOTPSetup = async () => {
-    setErr(''); setBusy(true);
-    try {
-      if (!joinedViaInvite) await saveEncrypted(derivedKey, DEFAULT_STATE);
-      // Persist key for auto-login on this device (parallels what the TOTP path does)
-      try { await storeKeyForDevice(derivedKey); } catch(e) {}
-      onDone(derivedKey, DEFAULT_STATE);
-    } catch(e) { setErr('Fehler. Bitte erneut versuchen.'); }
-    setBusy(false);
-  };
-
-  // ── LOGIN STEP 1: Authenticate with password ──────────────────
-  const submitLoginPassword = async () => {
-    setErr(''); setBusy(true);
-    try {
-      const key = await verifyPassword(pw);
-      if (!key) { doShake('Falsches Passwort.'); setBusy(false); return; }
-      const data = await loadEncrypted(key);
-      // Store key for device auto-login (always, with or without TOTP)
-      try { await storeKeyForDevice(key); } catch(e) {}
-      // Refresh device-key store if TOTP exists (so TOTP-only login stays available)
-      if (hasTOTP()) {
-        try {
-          const totpSec = await loadTOTPSecret(key);
-          if (totpSec) await storeTOTPAndKeyForDevice(totpSec, key);
-        } catch(e) {}
-      }
-      onDone(key, data || DEFAULT_STATE);
-    } catch(e) { setErr('Fehler. Bitte erneut versuchen.'); }
-    setBusy(false);
-  };
-
-  // ── LOGIN STEP 1: Authenticate with TOTP ─────────────────────
-  const submitLoginTOTP = async () => {
-    setErr(''); setBusy(true);
-    try {
-      if (!hasDeviceKeySetup()) {
-        setErr('Authenticator-Login wurde auf diesem Gerät noch nicht eingerichtet. Bitte zuerst mit Passwort anmelden.');
-        setBusy(false); return;
-      }
-      const result = await loginWithTOTPCode(code);
-      if (result === false) { doShake('Ungültiger Code.'); setCode(''); setBusy(false); return; }
-      if (!result) { setErr('Schlüssel nicht gefunden. Bitte mit Passwort anmelden.'); setBusy(false); return; }
-      const data = await loadEncrypted(result);
-      onDone(result, data || DEFAULT_STATE);
-    } catch(e) { setErr('Fehler. Bitte erneut versuchen.'); }
-    setBusy(false);
-  };
-
-  const totalSteps = isSetup ? 2 : 2;
-  const subtitle = isSetup
-    ? (['Konto einrichten', 'Authenticator (optional)'][step])
-    : (['E-Mail eingeben', 'Anmelden'][step] || 'Anmelden');
-
-  const canUseTOTPLogin = hasDeviceKeySetup();
-  const needsInvite = isSetup && email.trim() && email.trim().toLowerCase() !== OWNER_EMAIL.toLowerCase();
+  const S = {background:'rgba(255,255,255,0.07)',border:'1.5px solid rgba(255,255,255,0.1)',borderRadius:10,padding:'13px 14px',color:'white',fontSize:14,outline:'none',width:'100%',boxSizing:'border-box'};
 
   return (
     <div className="auth-screen">
-      <div className="auth-card" style={{width: (isSetup && step===1) ? 440 : 400}}>
-        <AuthLogo subtitle={subtitle} />
-        <StepDots current={step} total={totalSteps} />
-
-        <div className="auth-panel" style={{animation:shake?'shake 0.4s ease':'none'}}>
-
-          {/* ── LOGIN STEP 0: Email ── */}
-          {step === 0 && !isSetup && (<>
-            <div>
-              <div style={{fontSize:15,fontWeight:700,color:'white',marginBottom:4}}>Willkommen zurück</div>
-              <div style={{fontSize:12.5,color:'rgba(255,255,255,0.35)',lineHeight:1.6}}>Gib deine E-Mail-Adresse ein um fortzufahren.</div>
-            </div>
-            {!hasSetup() && (
-              <div style={{fontSize:12.5,color:'rgba(255,200,100,0.85)',padding:'10px 12px',background:'rgba(255,200,100,0.08)',borderRadius:8,lineHeight:1.5,border:'1px solid rgba(255,200,100,0.18)'}}>
-                ⚠ Auf diesem Gerät ist noch kein Konto eingerichtet. Du musst dich erst einrichten — entweder mit Einladungs-Link oder als Owner.
-              </div>
-            )}
-            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="deine@email.at"
-              className="auth-input" type="email" autoFocus
-              onKeyDown={e=>e.key==='Enter'&&submitLoginEmail()}/>
-            {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8}}>{err}</div>}
-            <button className="btn auth-btn" onClick={submitLoginEmail} disabled={busy||!email.trim()}>
-              {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> Prüfe…</>:'Weiter →'}
-            </button>
-            {onReset && (
-              <button onClick={onReset} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:12,cursor:'pointer',textAlign:'center',width:'100%',paddingTop:4}}
-                onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.45)'}
-                onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.2)'}>
-                Passwort vergessen? → {RECOVERY_EMAIL}
-              </button>
-            )}
-          </>)}
-
-          {/* ── SETUP STEP 0: All-in-one (Email + Invite + Password) ── */}
-          {step === 0 && isSetup && (<>
-            <div>
-              <div style={{fontSize:15,fontWeight:700,color:'white',marginBottom:4}}>Konto einrichten</div>
-              <div style={{fontSize:12.5,color:'rgba(255,255,255,0.35)',lineHeight:1.6}}>
-                {prefilledInvite
-                  ? <>Du wurdest eingeladen 🎉 Erstelle dein Konto.</>
-                  : <>Nur <strong style={{color:'rgba(255,255,255,0.55)'}}>{OWNER_EMAIL}</strong> kann ohne Einladung starten.</>
-                }
-              </div>
-            </div>
-            {!prefilledInvite && (
-              <div style={{background:'rgba(34,211,238,0.08)',border:'1px solid rgba(34,211,238,0.25)',borderRadius:10,padding:'11px 14px',fontSize:12,color:'rgba(186,230,253,0.95)',lineHeight:1.55}}>
-                <strong style={{color:'rgba(186,230,253,1)'}}>📱 Schon ein CRM-Konto auf einem anderen Gerät?</strong><br/>
-                Öffne dort die Sidebar links unten → <strong>"Gerät verbinden / einladen"</strong> → Verbindungs-Link erstellen → Link auf diesem Gerät öffnen. Dann sind alle deine Daten sofort da.
-              </div>
-            )}
-            <div>
-              <div style={{fontSize:11,fontWeight:600,color:'rgba(255,255,255,0.25)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'}}>E-Mail-Adresse</div>
-              <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="deine@email.at" className="auth-input" type="email" autoFocus={!prefilledInvite}
-                onKeyDown={e=>e.key==='Enter'&&submitCombinedSetup()}/>
-            </div>
-            {needsInvite && (
-              <div>
-                <div style={{fontSize:11,fontWeight:600,color:'rgba(255,255,255,0.25)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em',display:'flex',alignItems:'center',gap:6}}>
-                  Einladungs-Token
-                  {prefilledInvite && <span style={{color:'rgba(134,239,172,0.85)',textTransform:'none',letterSpacing:0,fontWeight:500,fontSize:10.5}}>· aus Link</span>}
-                </div>
-                <textarea value={invite} onChange={e=>setInvite(e.target.value)} placeholder="Token vom Team-Owner einfügen…" className="auth-input"
-                  style={{fontFamily:'monospace',fontSize:11.5,minHeight:62,wordBreak:'break-all',lineHeight:1.4}}/>
-                <div style={{fontSize:10.5,color:'rgba(255,255,255,0.3)',marginTop:5,lineHeight:1.5}}>Enthält Master-Schlüssel + Cloud-Sync-Zugang. Du wirst danach dein eigenes Passwort wählen.</div>
-              </div>
-            )}
-            <div>
-              <div style={{fontSize:11,fontWeight:600,color:'rgba(255,255,255,0.25)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'}}>Passwort</div>
-              <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Mindestens 8 Zeichen" autoFocus={!!prefilledInvite} onKeyDown={e=>e.key==='Enter'&&submitCombinedSetup()}/>
-            </div>
-            <PasswordInput value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Passwort bestätigen" onKeyDown={e=>e.key==='Enter'&&submitCombinedSetup()}/>
-            {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8}}>{err}</div>}
-            <button className="btn auth-btn" onClick={submitCombinedSetup} disabled={busy||!email.trim()||!pw||!pw2}>
-              {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> Einrichtung…</>:'Konto erstellen →'}
-            </button>
-            <div style={{fontSize:11,color:'rgba(255,255,255,0.25)',textAlign:'center',lineHeight:1.5}}>
-              Daten werden mit deinem Passwort verschlüsselt. Keine Wiederherstellung möglich.
-            </div>
-          </>)}
-
-          {/* ── SETUP STEP 1: TOTP (optional) ── */}
-          {step === 1 && isSetup && (<>
-            <div>
-              <div style={{fontSize:15,fontWeight:700,color:'white',marginBottom:4}}>Authenticator einrichten</div>
-              <div style={{fontSize:12.5,color:'rgba(255,255,255,0.35)',lineHeight:1.6}}>
-                <strong style={{color:'rgba(255,255,255,0.55)'}}>Optional</strong> — für extra Sicherheit. Du kannst das jetzt einrichten oder überspringen und später aktivieren.
-              </div>
-            </div>
-            <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:14}}>
-              <div style={{background:'white',padding:12,borderRadius:14,boxShadow:'0 4px 20px rgba(0,0,0,0.4)'}}>
-                <QRCodeImage url={otpUrl}/>
-              </div>
-              <div style={{textAlign:'center',width:'100%'}}>
-                <div style={{fontSize:10.5,color:'rgba(255,255,255,0.2)',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.06em'}}>Manuell eingeben</div>
-                <div style={{fontFamily:'monospace',fontSize:12,color:'rgba(255,255,255,0.45)',letterSpacing:'2px',wordBreak:'break-all',background:'rgba(255,255,255,0.05)',padding:'8px 10px',borderRadius:8,lineHeight:1.6}}>{totpSecret}</div>
-              </div>
-            </div>
-            <div style={{borderTop:'1px solid rgba(255,255,255,0.08)',paddingTop:14}}>
-              <div style={{fontSize:12,color:'rgba(255,255,255,0.35)',marginBottom:8}}>6-stelligen Code aus der App eingeben:</div>
-              <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))}
-                placeholder="000000" className="auth-input totp-input"
-                onKeyDown={e=>e.key==='Enter'&&code.length===6&&submitTOTPSetup()}
-                maxLength={6} inputMode="numeric" autoFocus/>
-            </div>
-            {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
-            <button className="btn auth-btn" onClick={submitTOTPSetup} disabled={busy||code.length!==6}>
-              {busy ? <><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> Prüfe…</> : 'Authenticator aktivieren →'}
-            </button>
-            <button onClick={skipTOTPSetup} disabled={busy} style={{background:'none',border:'none',color:'rgba(255,255,255,0.4)',fontSize:13,cursor:'pointer',textAlign:'center',width:'100%',padding:'4px 0',fontWeight:500,transition:'color 0.15s'}}
-              onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.7)'}
-              onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.4)'}>
-              Überspringen — direkt einloggen
-            </button>
-          </>)}
-
-          {/* ── LOGIN STEP 1: Password OR TOTP ── */}
-          {!isSetup && step === 1 && (<>
-            <div>
-              <div style={{fontSize:15,fontWeight:700,color:'white',marginBottom:4}}>Anmelden</div>
-              <div style={{fontSize:12.5,color:'rgba(255,255,255,0.35)',lineHeight:1.6}}>
-                {hasTOTP() ? 'Wähle deine Anmeldemethode.' : 'Gib dein Passwort ein.'}
-              </div>
-            </div>
-
-            {/* Method toggle — only when TOTP exists */}
-            {hasTOTP() && (
-              <div style={{display:'flex',background:'rgba(255,255,255,0.06)',borderRadius:10,padding:3,gap:2}}>
-                {[{key:'password',label:'🔑 Passwort'},{key:'totp',label:'📱 Authenticator'}].map(m=>(
-                  <button key={m.key} onClick={()=>{setLoginMode(m.key);setErr('');setCode('');setPw('');}}
-                    style={{flex:1,padding:'9px 12px',borderRadius:8,border:'none',cursor:'pointer',fontSize:13,fontWeight:600,transition:'all 0.15s',
-                      background:loginMode===m.key?'white':'transparent',
-                      color:loginMode===m.key?'#0F0E0C':'rgba(255,255,255,0.4)'}}>
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {(loginMode === 'password' || !hasTOTP()) && (<>
-              <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Passwort" autoFocus
-                onKeyDown={e=>e.key==='Enter'&&submitLoginPassword()}/>
-              {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8}}>{err}</div>}
-              <button className="btn auth-btn" onClick={submitLoginPassword} disabled={busy||!pw}>
-                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> Prüfe…</>:'Anmelden →'}
-              </button>
-              {onReset && (
-                <button onClick={onReset} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:12,cursor:'pointer',textAlign:'center',width:'100%',paddingTop:4}}
-                  onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}
-                  onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.2)'}>
-                  Passwort vergessen? → {RECOVERY_EMAIL}
-                </button>
-              )}
-            </>)}
-
-            {hasTOTP() && loginMode === 'totp' && (<>
-              {!canUseTOTPLogin && (
-                <div style={{fontSize:12.5,color:'rgba(255,200,100,0.8)',padding:'10px 12px',background:'rgba(255,200,100,0.08)',borderRadius:8,lineHeight:1.5}}>
-                  ⚠ Authenticator-Login wurde auf diesem Gerät noch nicht eingerichtet. Melde dich einmal mit Passwort an — danach funktioniert der Authenticator-Login automatisch.
-                </div>
-              )}
-              <TOTPTimer/>
-              <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))}
-                placeholder="000000" className="auth-input totp-input"
-                onKeyDown={e=>e.key==='Enter'&&code.length===6&&submitLoginTOTP()}
-                maxLength={6} inputMode="numeric" autoFocus/>
-              {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
-              <button className="btn auth-btn" onClick={submitLoginTOTP} disabled={busy||code.length!==6||!canUseTOTPLogin}>
-                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> Prüfe…</>:'Anmelden →'}
-              </button>
-            </>)}
-
-            <button onClick={()=>{setStep(0);setCode('');setPw('');setErr('');}} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:12,cursor:'pointer',textAlign:'center',width:'100%'}}>← Zurück</button>
-          </>)}
-
+      <div className="auth-card">
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <img src="logo.png" alt="WebArs" style={{width:60,height:60,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.35)',marginTop:4}}>{isSetup?'Konto einrichten':'Anmelden'}</div>
         </div>
-
-        {onSwitchMode && step === 0 && (
-          <div style={{textAlign:'center',marginTop:18,fontSize:12.5,color:'rgba(255,255,255,0.4)'}}>
-            {isSetup ? (<>
-              Schon ein Konto?{' '}
-              <button onClick={onSwitchMode} style={{background:'none',border:'none',color:'white',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600,textDecoration:'underline',textUnderlineOffset:'3px'}}>
-                Anmelden
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          {isSetup && (
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
+              placeholder="E-Mail-Adresse" autoFocus style={S}
+              onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
+          )}
+          <PasswordInput value={pw} onChange={e=>setPw(e.target.value)}
+            placeholder="Passwort" autoFocus={!isSetup}
+            onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
+          {isSetup && (
+            <PasswordInput value={pw2} onChange={e=>setPw2(e.target.value)}
+              placeholder="Passwort bestätigen"
+              onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
+          )}
+          {err && <div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
+          <button className="btn auth-btn" onClick={submit} disabled={busy||!pw}>
+            {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:isSetup?'Konto erstellen →':'Anmelden →'}
+          </button>
+        </div>
+        {!isSetup && (
+          <div style={{textAlign:'center',marginTop:14,display:'flex',justifyContent:'center',gap:18,flexWrap:'wrap'}}>
+            {onForgotPassword && SELF_HOSTED && (
+              <button onClick={onForgotPassword} style={{background:'none',border:'none',color:'rgba(255,255,255,0.35)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
+                onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
+                onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.35)'}>
+                Passwort vergessen?
               </button>
-            </>) : (<>
-              Noch kein Konto?{' '}
-              <button onClick={onSwitchMode} style={{background:'none',border:'none',color:'white',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600,textDecoration:'underline',textUnderlineOffset:'3px'}}>
-                Konto einrichten
-              </button>
-            </>)}
+            )}
+            <button onClick={()=>{
+              // Show localStorage key diagnostics to aid debugging
+              const hasVerify = !!localStorage.getItem('webars_verify_v1');
+              const hasSalt   = !!localStorage.getItem('webars_salt_v1');
+              const hasMk     = !!localStorage.getItem('webars_master_v1');
+              alert(`Diagnose:\nVERIFY_KEY: ${hasVerify}\nSALT_KEY: ${hasSalt}\nMASTER_KEY: ${hasMk}\n\nFalls alle fehlen: Seite neu laden und "Einrichten" wählen.\nFalls vorhanden: Passwort ist falsch oder Browser-Daten wurden verändert.`);
+            }} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:11.5,cursor:'pointer',padding:0}}>
+              Diagnose
+            </button>
           </div>
         )}
-
-        <AuthFooter/>
+        {onSwitchMode && (
+          <div style={{textAlign:'center',marginTop:14,fontSize:12.5,color:'rgba(255,255,255,0.3)'}}>
+            {isSetup
+              ? <><span>Schon ein Konto? </span><button onClick={onSwitchMode} style={{background:'none',border:'none',color:'rgba(255,255,255,0.7)',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600}}>Anmelden</button></>
+              : <><span>Noch kein Konto? </span><button onClick={onSwitchMode} style={{background:'none',border:'none',color:'rgba(255,255,255,0.7)',fontSize:12.5,cursor:'pointer',padding:0,fontWeight:600}}>Einrichten</button></>
+            }
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1469,72 +1208,238 @@ function AuthScreen({mode, onDone, onReset, onSwitchMode, prefilledInvite}) {
 
 // ── LOCK OVERLAY ─────────────────────────────────────────────────
 function LockOverlay({onUnlock}) {
-  const [lockMode,setLockMode]=useState('password'); // 'password' | 'totp'
-  const [pw,setPw]=useState('');
-  const [code,setCode]=useState('');
-  const [err,setErr]=useState('');
-  const [busy,setBusy]=useState(false);
-  const [shake,setShake]=useState(false);
-  const doShake=msg=>{setErr(msg);setShake(true);setTimeout(()=>setShake(false),500);};
-  const canUseTOTP=hasDeviceKeySetup();
+  const [pw,  setPw]  = useState('');
+  const [err, setErr] = useState('');
+  const [busy,setBusy]= useState(false);
 
-  const submitPassword=async()=>{
-    setErr('');setBusy(true);
-    const key=await verifyPassword(pw);
-    if(!key){doShake('Falsches Passwort.');setBusy(false);return;}
-    const data=await loadEncrypted(key);
-    // Refresh device store
-    try{const s=await loadTOTPSecret(key);if(s)await storeTOTPAndKeyForDevice(s,key);}catch(e){}
-    onUnlock(key,data||DEFAULT_STATE);
-  };
-  const submitTOTP=async()=>{
-    setErr('');setBusy(true);
-    const result=await loginWithTOTPCode(code);
-    if(result===false){doShake('Ungültiger Code.');setCode('');setBusy(false);return;}
-    if(!result){setErr('Schlüssel nicht gefunden.');setBusy(false);return;}
-    const data=await loadEncrypted(result);
-    onUnlock(result,data||DEFAULT_STATE);
+  const submit = async () => {
+    setBusy(true); setErr('');
+    const key = await verifyPassword(pw);
+    if (!key) { setErr('Falsches Passwort.'); setBusy(false); return; }
+    const data = await loadEncrypted(key);
+    try { await storeKeyForDevice(key); } catch(e) {}
+    onUnlock(key, data || DEFAULT_STATE);
   };
 
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(10,9,7,0.95)',backdropFilter:'blur(20px)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div style={{width:380,animation:'loginIn 0.3s ease',display:'grid',gap:20}}>
+      <div style={{width:360,display:'grid',gap:20}}>
         <div style={{textAlign:'center'}}>
-          <img src="logo.png" alt="WebArs" style={{width:48,height:48,borderRadius:'50%',marginBottom:12,opacity:0.9}}/>
-          <div style={{fontWeight:700,fontSize:17,color:'white'}}>Gesperrt</div>
-          <div style={{fontSize:13,color:'rgba(255,255,255,0.3)',marginTop:3}}>Anmelden um fortzufahren</div>
+          <img src="logo.png" alt="WebArs" style={{width:52,height:52,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:20,color:'white'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.3)',marginTop:4}}>Gesperrt — Passwort eingeben</div>
         </div>
-        <div className="auth-panel" style={{animation:shake?'shake 0.4s ease':'none'}}>
-          {/* Method toggle */}
-          <div style={{display:'flex',background:'rgba(255,255,255,0.06)',borderRadius:10,padding:3,gap:2}}>
-            {[{key:'password',label:'🔑 Passwort'},{key:'totp',label:'📱 Authenticator'}].map(m=>(
-              <button key={m.key} onClick={()=>{setLockMode(m.key);setErr('');setCode('');setPw('');}}
-                style={{flex:1,padding:'8px 10px',borderRadius:8,border:'none',cursor:'pointer',fontSize:12.5,fontWeight:600,transition:'all 0.15s',
-                  background:lockMode===m.key?'white':'transparent',
-                  color:lockMode===m.key?'#0F0E0C':'rgba(255,255,255,0.4)'}}>
-                {m.label}
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Passwort" autoFocus
+            onKeyDown={e=>e.key==='Enter'&&!busy&&pw&&submit()}/>
+          {err && <div style={{fontSize:12.5,color:'#F87171',textAlign:'center'}}>{err}</div>}
+          <button className="btn auth-btn" onClick={submit} disabled={busy||!pw}>
+            {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Entsperren →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── FORGOT PASSWORD SCREEN ───────────────────────────────────────
+function ForgotPasswordScreen({onBack}) {
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [resetUrl,setResetUrl]=useState('');
+  const [err,setErr]=useState('');
+
+  const send=async()=>{
+    setBusy(true);setErr('');
+    try{
+      const r=await fetch('/api/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      if(!r.ok){setErr('Server-Fehler. Bitte versuche es erneut.');setBusy(false);return;}
+      const j=await r.json();
+      if(j.resetUrl)setResetUrl(j.resetUrl);
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  return(
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <img src="logo.png" alt="WebArs" style={{width:60,height:60,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.35)',marginTop:4}}>Passwort zurücksetzen</div>
+        </div>
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          {!done?(
+            <>
+              <div style={{fontSize:13.5,color:'rgba(255,255,255,0.55)',lineHeight:1.65,textAlign:'center'}}>
+                Ein Zurücksetz-Link wird für dich generiert.<br/>
+                <span style={{fontSize:12,color:'rgba(255,255,255,0.3)'}}>Falls SMTP konfiguriert ist, wird er per E-Mail gesendet. Sonst wird er hier angezeigt.</span>
+              </div>
+              {err&&<div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
+              <button className="btn auth-btn" onClick={send} disabled={busy}>
+                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Link anfordern →'}
               </button>
-            ))}
-          </div>
-          {lockMode==='password'&&(<>
-            <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Passwort" autoFocus onKeyDown={e=>e.key==='Enter'&&submitPassword()}/>
-            {err&&<div style={{fontSize:12.5,color:'#F87171',textAlign:'center'}}>{err}</div>}
-            <button className="btn auth-btn" onClick={submitPassword} disabled={busy||!pw}>
-              {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Entsperren →'}
-            </button>
-          </>)}
-          {lockMode==='totp'&&(<>
-            {!canUseTOTP&&<div style={{fontSize:12.5,color:'rgba(255,200,100,0.8)',padding:'10px 12px',background:'rgba(255,200,100,0.08)',borderRadius:8,lineHeight:1.5}}>
-              ⚠ Authenticator-Login noch nicht eingerichtet. Bitte mit Passwort entsperren.
-            </div>}
-            <TOTPTimer/>
-            <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))} placeholder="000000" className="auth-input totp-input" onKeyDown={e=>e.key==='Enter'&&code.length===6&&submitTOTP()} maxLength={6} inputMode="numeric" autoFocus/>
-            {err&&<div style={{fontSize:12.5,color:'#F87171',textAlign:'center'}}>{err}</div>}
-            <button className="btn auth-btn" onClick={submitTOTP} disabled={busy||code.length!==6||!canUseTOTP}>
-              {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Entsperren →'}
-            </button>
-          </>)}
+            </>
+          ):(
+            <>
+              {resetUrl?(
+                <>
+                  <div style={{fontSize:13,color:'rgba(255,255,255,0.5)',lineHeight:1.6,textAlign:'center'}}>
+                    Kein SMTP konfiguriert. Hier ist dein Zurücksetz-Link:
+                  </div>
+                  <div style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'12px 14px',wordBreak:'break-all',userSelect:'all'}}>
+                    <a href={resetUrl} style={{color:'#60A5FA',fontSize:12.5,textDecoration:'none',lineHeight:1.5}}>{resetUrl}</a>
+                  </div>
+                  <button className="btn auth-btn" onClick={()=>window.location.href=resetUrl}>Jetzt zurücksetzen →</button>
+                </>
+              ):(
+                <div style={{fontSize:14,color:'rgba(255,255,255,0.65)',lineHeight:1.7,textAlign:'center',padding:'8px 0'}}>
+                  ✓ E-Mail wurde gesendet!<br/>
+                  <span style={{fontSize:12.5,color:'rgba(255,255,255,0.35)'}}>Überprüfe dein Postfach und klicke den Link.</span>
+                </div>
+              )}
+            </>
+          )}
         </div>
+        <div style={{textAlign:'center',marginTop:18}}>
+          <button onClick={onBack} style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
+            onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
+            onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.3)'}>← Zurück zum Login</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RESET PASSWORD SCREEN (via ?reset=TOKEN in URL) ──────────────
+function ResetPasswordScreen({token}) {
+  const [pw,setPw]=useState('');
+  const [pw2,setPw2]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [err,setErr]=useState('');
+
+  const reset=async()=>{
+    if(pw.length<8){setErr('Mindestens 8 Zeichen.');return;}
+    if(pw!==pw2){setErr('Passwörter stimmen nicht überein.');return;}
+    setBusy(true);setErr('');
+    try{
+      const r=await fetch(`/api/reset-token/${encodeURIComponent(token)}`);
+      if(!r.ok){const j=await r.json();setErr(j.error||'Token ungültig oder abgelaufen.');setBusy(false);return;}
+      const j=await r.json();
+      const masterKey=await unescrowMasterKey(j.escrow);
+      await rewrapMasterKey(masterKey,pw);
+      try{await storeKeyForDevice(masterKey);}catch(e){}
+      await fetch(`/api/reset-token/${encodeURIComponent(token)}/confirm`,{method:'POST'});
+      // Clean URL
+      window.history.replaceState({},'','/');
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  return(
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <img src="logo.png" alt="WebArs" style={{width:60,height:60,borderRadius:'50%',marginBottom:14,boxShadow:'0 8px 24px rgba(0,0,0,0.4)'}}/>
+          <div style={{fontWeight:800,fontSize:22,color:'white',letterSpacing:'-0.02em'}}>WebArs CRM</div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.35)',marginTop:4}}>Neues Passwort festlegen</div>
+        </div>
+        <div className="auth-panel" style={{display:'grid',gap:14}}>
+          {done?(
+            <>
+              <div style={{fontSize:14,color:'rgba(255,255,255,0.65)',textAlign:'center',lineHeight:1.7,padding:'8px 0'}}>
+                ✓ Passwort erfolgreich geändert!<br/>
+                <span style={{fontSize:12.5,color:'rgba(255,255,255,0.35)'}}>Du kannst dich jetzt einloggen.</span>
+              </div>
+              <button className="btn auth-btn" onClick={()=>window.location.href='/'}>Zum Login →</button>
+            </>
+          ):(
+            <>
+              <PasswordInput value={pw} onChange={e=>setPw(e.target.value)} placeholder="Neues Passwort (min. 8 Zeichen)" autoFocus onKeyDown={e=>e.key==='Enter'&&!busy&&reset()}/>
+              <PasswordInput value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Passwort bestätigen" onKeyDown={e=>e.key==='Enter'&&!busy&&reset()}/>
+              {err&&<div style={{fontSize:12.5,color:'#F87171',padding:'8px 12px',background:'rgba(248,113,113,0.1)',borderRadius:8,textAlign:'center'}}>{err}</div>}
+              <button className="btn auth-btn" onClick={reset} disabled={busy||!pw||!pw2}>
+                {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:'Passwort speichern →'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CHANGE PASSWORD MODAL (in-app) ───────────────────────────────
+function ChangePasswordModal({cryptoKey,onClose}){
+  const [curPw,setCurPw]=useState('');
+  const [newPw,setNewPw]=useState('');
+  const [newPw2,setNewPw2]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+  const [err,setErr]=useState('');
+
+  const submit=async()=>{
+    if(newPw.length<8){setErr('Neues Passwort: mindestens 8 Zeichen.');return;}
+    if(newPw!==newPw2){setErr('Passwörter stimmen nicht überein.');return;}
+    setBusy(true);setErr('');
+    try{
+      // verifyPassword returns an extractable copy of the master key — always use this,
+      // NOT the cryptoKey prop which may be non-extractable (e.g. after auto-login)
+      const verifiedKey=await verifyPassword(curPw);
+      if(!verifiedKey){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
+      await rewrapMasterKey(verifiedKey,newPw);
+      try{await storeKeyForDevice(verifiedKey);}catch(e){}
+      try{await escrowMasterKey(verifiedKey);}catch(e){}
+      setDone(true);
+    }catch(e){setErr('Fehler: '+e.message);}
+    setBusy(false);
+  };
+
+  const inputStyle={width:'100%',padding:'11px 14px',borderRadius:9,border:'1.5px solid rgba(0,0,0,0.12)',fontSize:14,fontFamily:'inherit',outline:'none',boxSizing:'border-box'};
+
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal-box" style={{width:400}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:24}}>
+          <div style={{fontWeight:700,fontSize:17}}>🔑 Passwort ändern</div>
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose}>✕</button>
+        </div>
+        {done?(
+          <>
+            <div style={{textAlign:'center',padding:'20px 0',color:'#166534',background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:12,marginBottom:18,fontSize:14,fontWeight:600}}>
+              ✓ Passwort erfolgreich geändert
+            </div>
+            <button className="btn btn-primary" style={{width:'100%'}} onClick={onClose}>Schließen</button>
+          </>
+        ):(
+          <>
+            <div style={{display:'grid',gap:12,marginBottom:16}}>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Aktuelles Passwort</div>
+                <input type="password" value={curPw} onChange={e=>setCurPw(e.target.value)} placeholder="••••••••" autoFocus style={inputStyle}/>
+              </div>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort</div>
+                <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Mindestens 8 Zeichen" style={inputStyle}/>
+              </div>
+              <div>
+                <div style={{fontSize:11.5,fontWeight:600,color:'#6B6560',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>Neues Passwort bestätigen</div>
+                <input type="password" value={newPw2} onChange={e=>setNewPw2(e.target.value)} placeholder="••••••••"
+                  style={inputStyle} onKeyDown={e=>e.key==='Enter'&&!busy&&submit()}/>
+              </div>
+            </div>
+            {err&&<div style={{fontSize:12.5,color:'#C0392B',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:8,padding:'9px 12px',marginBottom:14,textAlign:'center'}}>{err}</div>}
+            <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+              <button className="btn btn-ghost" onClick={onClose}>Abbrechen</button>
+              <button className="btn btn-primary" onClick={submit} disabled={busy||!curPw||!newPw||!newPw2}>
+                {busy?<><span className="spinner"></span> …</>:'Passwort ändern'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -6828,8 +6733,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
           {[
             {icon:<span style={{fontSize:13}}>🕐</span>,label:'Snapshots',action:()=>setModal('snapshots')},
             {icon:<Icons.Field/>,label:'Felder verwalten',action:()=>setModal('addField')},
-            {icon:<Icons.Members/>,label:'Mitglieder',action:()=>setModal('members')},
-            {icon:<Icons.Invite/>,label:'Gerät verbinden / einladen',action:()=>setModal('invites')},
+            {icon:<span style={{fontSize:13}}>🔑</span>,label:'Passwort',action:()=>setModal('changePassword')},
             {icon:<span style={{fontSize:13}}>⚙</span>,label:'Einstellungen',action:()=>setModal('githubSync')},
             (()=>{
               const sync=getSyncState();
@@ -7072,6 +6976,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='quoteSettings'&&<QuoteSettingsModal settings={state.quoteSettings} onSave={s=>upd({quoteSettings:s})} onClose={()=>setModal(null)}/>}
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
+    {modal==='changePassword'&&<ChangePasswordModal cryptoKey={cryptoKey} onClose={()=>setModal(null)}/>}
     {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
@@ -7140,11 +7045,15 @@ function AuthWrapper(){
   const publicFormSlug=(()=>{try{return new URLSearchParams(window.location.search).get('form');}catch(e){return null;}})();
   if(publicFormSlug)return <PublicFormPage slug={publicFormSlug}/>;
 
+  // Password reset mode: ?reset=TOKEN
+  const resetToken=(()=>{try{return new URLSearchParams(window.location.search).get('reset');}catch(e){return null;}})();
+  if(resetToken&&SELF_HOSTED)return <ResetPasswordScreen token={resetToken}/>;
+
   useEffect(()=>{
     // Read ?invite=CODE from URL
     try{
-      const params = new URLSearchParams(window.location.search);
-      const inv = params.get('invite');
+      const params=new URLSearchParams(window.location.search);
+      const inv=params.get('invite');
       if(inv) setPrefilledInvite(inv.trim());
     }catch(e){}
     // Try auto-login with stored device key (no password needed on same device)
@@ -7153,7 +7062,8 @@ function AuthWrapper(){
         try{
           const dk = await getOrCreateDeviceKey();
           const b64key = await aesDecrypt(dk, JSON.parse(localStorage.getItem(PKEY_ENC_STORE)));
-          const key = await crypto.subtle.importKey('raw',fromB64(b64key),{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+          // extractable:true so escrowMasterKey and storeKeyForDevice work correctly
+          const key = await crypto.subtle.importKey('raw',fromB64(b64key),{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
           if(key){
             // Load GitHub settings first (so loadEncrypted can fetch from GitHub)
             if(hasGithubSettings()){
@@ -7189,7 +7099,8 @@ function AuthWrapper(){
       <span style={{width:28,height:28,border:'2.5px solid rgba(255,255,255,.1)',borderTopColor:'white',borderRadius:'50%',animation:'spin .7s linear infinite',display:'block'}}></span>
     </div>
   );
-  const completeAuth = async (key, data) => {
+
+  const completeAuth = async (key, data, email) => {
     // Load GitHub settings if configured, then refresh data from GitHub
     if (hasGithubSettings()) {
       try {
@@ -7198,13 +7109,16 @@ function AuthWrapper(){
         if (fresh) data = fresh;
       } catch(e) { console.warn('GitHub sync init failed', e); }
     }
+    // Silently update key escrow so password reset works in the future
+    escrowMasterKey(key).catch(()=>{});
     setCryptoKey(key);
     setCrmData(data);
     setPhase('app');
   };
 
-  if(phase==='setup')return <AuthScreen mode="setup" prefilledInvite={prefilledInvite} onDone={completeAuth} onSwitchMode={()=>setPhase('login')}/>;
-  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onReset={handleReset} onSwitchMode={()=>setPhase('setup')}/>;
+  if(phase==='setup')return <AuthScreen mode="setup" onDone={completeAuth} onSwitchMode={()=>setPhase('login')}/>;
+  if(phase==='login')return <AuthScreen mode="login" onDone={completeAuth} onSwitchMode={()=>setPhase('setup')} onForgotPassword={SELF_HOSTED?()=>setPhase('forgot'):null}/>;
+  if(phase==='forgot')return <ForgotPasswordScreen onBack={()=>setPhase('login')}/>;
   if(phase==='app'&&cryptoKey&&crmData)return <CRMApp cryptoKey={cryptoKey} initialData={crmData} onLock={()=>setPhase('login')} onLogout={handleLogout}/>;
   return null;
 }

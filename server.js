@@ -10,14 +10,26 @@
 //    PORT          — (optional) defaults to 3000
 // ══════════════════════════════════════════════════════════════════
 
-const express = require('express');
-const mysql   = require('mysql2/promise');
-const path    = require('path');
-const fs      = require('fs');
+const express     = require('express');
+const mysql       = require('mysql2/promise');
+const path        = require('path');
+const fs          = require('fs');
+const nodeCrypto  = require('crypto');
+
+// Optional nodemailer (install nodemailer package to enable email reset)
+let nodemailer = null;
+try { nodemailer = require('nodemailer'); } catch(e) { console.log('ℹ nodemailer not installed — email reset will show link instead'); }
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || '').trim();
+const APP_URL    = (process.env.APP_URL    || 'http://localhost:3000').replace(/\/$/, '');
+const SMTP_HOST  = process.env.SMTP_HOST  || '';
+const SMTP_PORT  = parseInt(process.env.SMTP_PORT || '587');
+const SMTP_USER  = process.env.SMTP_USER  || '';
+const SMTP_PASS  = process.env.SMTP_PASS  || '';
+const SMTP_FROM  = process.env.SMTP_FROM  || SMTP_USER;
+const RESET_TO   = process.env.RESET_TO   || SMTP_USER; // address that receives the reset email
 
 if (!API_SECRET) {
   console.error('❌  FATAL: API_SECRET environment variable is not set. Refusing to start.');
@@ -118,6 +130,23 @@ async function initDb() {
         UNIQUE KEY uk_name (name)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_key_escrow (
+        id         INT          NOT NULL DEFAULT 1,
+        content    LONGTEXT     NOT NULL,
+        updated_at DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token      VARCHAR(128) NOT NULL,
+        expires_at DATETIME     NOT NULL,
+        used       TINYINT(1)   NOT NULL DEFAULT 0,
+        created_at DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (token)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     console.log('✓ Database tables ready');
   } finally {
     conn.release();
@@ -200,8 +229,14 @@ app.put('/api/data', requireAuth, async (req, res) => {
       return res.json({ version: 1 });
     }
     const currentVer = rows[0].version;
-    // Conflict check: if caller sent a version and it doesn't match → 409
-    if (version !== null && version !== undefined && Number(version) !== currentVer) {
+    // SAFETY: if caller sends version=null (fresh setup / unknown state), refuse to
+    // overwrite existing data — prevents a new browser session from wiping old records.
+    if (version === null || version === undefined) {
+      await conn.rollback();
+      return res.status(409).json({ error: 'EXISTING_DATA', version: currentVer, message: 'Server hat bereits Daten. Bitte zuerst laden (version mitsenden).' });
+    }
+    // Conflict check: version must match current
+    if (Number(version) !== currentVer) {
       await conn.rollback();
       return res.status(409).json({ error: 'Conflict: data was modified by another device' });
     }
@@ -326,6 +361,114 @@ app.post('/api/backups', requireAuth, async (_req, res) => {
   }
 });
 
+// ── Master-Key Escrow (encrypted with API_SECRET-derived key) ────
+app.get('/api/key-escrow', requireAuth, async (_req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT content FROM crm_key_escrow WHERE id = 1');
+    if (!rows.length) return res.status(404).json({ error: 'No escrow yet' });
+    res.json(fromRow(rows[0], 'content'));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/key-escrow', requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      'INSERT INTO crm_key_escrow (id, content) VALUES (1, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
+      [toJson(req.body)]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Password Reset ───────────────────────────────────────────────
+// POST /api/forgot-password  — generate reset token, send email or return URL
+app.post('/api/forgot-password', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    // Clean up expired/used tokens first
+    await pool.query('DELETE FROM password_resets WHERE used = 1 OR expires_at < NOW()');
+
+    // Generate a secure one-time token (valid for 1 hour)
+    const token = nodeCrypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await pool.query('INSERT INTO password_resets (token, expires_at) VALUES (?, ?)', [token, expiresAt]);
+
+    const resetUrl = `${APP_URL}/?reset=${token}`;
+
+    // Try to send email if SMTP is configured
+    if (nodemailer && SMTP_HOST && SMTP_USER && SMTP_PASS && RESET_TO) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: SMTP_HOST,
+          port: SMTP_PORT,
+          secure: SMTP_PORT === 465,
+          auth: { user: SMTP_USER, pass: SMTP_PASS },
+        });
+        await transporter.sendMail({
+          from: SMTP_FROM || SMTP_USER,
+          to: RESET_TO,
+          subject: 'WebArs CRM — Passwort zurücksetzen',
+          html: `
+            <p>Hallo,</p>
+            <p>Du hast eine Passwort-Zurücksetzung für WebArs CRM angefordert.</p>
+            <p><a href="${resetUrl}" style="background:#141210;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;margin:16px 0">Passwort zurücksetzen →</a></p>
+            <p style="color:#666;font-size:13px">Oder kopiere diesen Link: ${resetUrl}</p>
+            <p style="color:#666;font-size:13px">Gültig für 1 Stunde. Falls du diese Anfrage nicht gestellt hast, ignoriere diese E-Mail.</p>
+          `,
+        });
+        console.log(`✓ Password reset email sent to ${RESET_TO}`);
+        return res.json({ ok: true, emailSent: true });
+      } catch (mailErr) {
+        console.error('Email send failed:', mailErr.message);
+        // Fall through — return URL directly
+      }
+    }
+
+    // No SMTP or email failed — return reset URL directly (admin-only use case)
+    console.log(`ℹ Password reset URL generated (no email sent): ${resetUrl}`);
+    res.json({ ok: true, emailSent: false, resetUrl });
+  } catch (e) {
+    console.error('POST /api/forgot-password:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/reset-token/:token — validate token, return escrowed master key
+app.get('/api/reset-token/:token', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [rows] = await pool.query(
+      'SELECT token FROM password_resets WHERE token = ? AND used = 0 AND expires_at > NOW()',
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Link ungültig oder abgelaufen. Bitte fordere einen neuen an.' });
+
+    // Return the escrowed master key so the client can re-wrap it with the new password
+    const [escrow] = await pool.query('SELECT content FROM crm_key_escrow WHERE id = 1');
+    if (!escrow.length) return res.status(404).json({ error: 'Kein Key-Escrow gefunden. Bitte logge dich zuerst einmal erfolgreich ein, damit das Escrow erstellt wird.' });
+
+    res.json({ escrow: fromRow(escrow[0], 'content') });
+  } catch (e) {
+    console.error('GET /api/reset-token:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/reset-token/:token/confirm — mark token as used after password was changed
+app.post('/api/reset-token/:token/confirm', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    await pool.query('UPDATE password_resets SET used = 1 WHERE token = ?', [req.params.token]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Import JSON backup from old GitHub-based CRM ─────────────────
 app.post('/api/import', requireAuth, async (req, res) => {
   const { encryptedData } = req.body;
@@ -349,6 +492,26 @@ app.post('/api/import', requireAuth, async (req, res) => {
   }
 });
 
+// ── Admin: Full Reset (clears all CRM data + escrow, keeps structure) ──────
+// POST /api/admin/reset  — requires Bearer API_SECRET
+// Wipes crm_data, crm_key_escrow, crm_backups, recovery_blobs so the owner
+// can do a clean setup after forgetting the password. Table schema stays intact.
+app.post('/api/admin/reset', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    await pool.query('DELETE FROM crm_data');
+    await pool.query('DELETE FROM crm_key_escrow');
+    await pool.query('DELETE FROM recovery_blobs');
+    await pool.query('DELETE FROM password_resets');
+    // Keep crm_backups and crm_summary intentionally — harmless
+    console.log('⚠ Admin reset executed — all CRM data cleared');
+    res.json({ ok: true, message: 'Alle CRM-Daten gelöscht. Bitte localStorage im Browser leeren und neu einrichten.' });
+  } catch (e) {
+    console.error('POST /api/admin/reset:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Frontend (inject SELF_HOSTED flag) ───────────────────────────
 const INDEX_PATH = path.join(__dirname, 'index.html');
 
@@ -357,7 +520,7 @@ app.get('/', (_req, res) => {
     let html = fs.readFileSync(INDEX_PATH, 'utf8');
     html = html.replace(
       '<script>',
-      '<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\n'
+      `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`
     );
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
