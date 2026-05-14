@@ -1582,6 +1582,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
     setBackupErr(''); setMigrateBusy(true);
     try {
       const isV2 = !!(migratePending.exportSalt && migratePending.encryptedMasterKey);
+      const isV3 = !!(migratePending.localSalt && migratePending.localMasterEncKey);
       let oldMasterKey;
       if(isV2){
         // V2: derive key directly from password + exportSalt embedded in file
@@ -1589,6 +1590,13 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         const exportWrapKey = await deriveKey(migrateOldPw, exportSalt);
         let oldMasterKeyB64;
         try { oldMasterKeyB64 = await aesDecrypt(exportWrapKey, migratePending.encryptedMasterKey); }
+        catch(e){ throw new Error('Altes Passwort falsch.'); }
+        oldMasterKey = await importMasterKeyFromB64(oldMasterKeyB64);
+      } else if(isV3){
+        // V3: salt + wrapped master key still in localStorage — just need old password
+        const oldWrapKey = await deriveKey(migrateOldPw, fromB64(migratePending.localSalt));
+        let oldMasterKeyB64;
+        try { oldMasterKeyB64 = await aesDecrypt(oldWrapKey, migratePending.localMasterEncKey); }
         catch(e){ throw new Error('Altes Passwort falsch.'); }
         oldMasterKey = await importMasterKeyFromB64(oldMasterKeyB64);
       } else {
@@ -1699,11 +1707,37 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
         content = JSON.parse(b64decode(j.content));
       }
       // Sanity-check: must be decryptable with current key
-      try { await aesDecrypt(cryptoKey, content); }
-      catch(e) { throw new Error('Backup kann mit deinem Passwort nicht entschlüsselt werden.'); }
-      const fetched = await ghFetchFile(s.token, s.repo||'', s.path||'');
-      const newSha = await ghPushFile(s.token, s.repo||'', s.path||'', content, fetched.sha, `Restore from backup ${backup.name||backup.id}`);
-      _ghSha = newSha;
+      let canDecrypt = false;
+      try { await aesDecrypt(cryptoKey, content); canDecrypt = true; } catch(e){}
+      if (!canDecrypt) {
+        // Key mismatch — ask for old password instead of hard-failing.
+        // Auto-read local salt+masterKey if still in localStorage (password-only flow).
+        const localSalt = getSalt();
+        const localMasterEncRaw = localStorage.getItem(MASTER_KEY_STORE);
+        if (localSalt && localMasterEncRaw) {
+          setMigratePending({encryptedData: content, localSalt, localMasterEncKey: JSON.parse(localMasterEncRaw), fromServerBackup: true});
+        } else {
+          // localStorage cleared — fall back to manual console-extract flow
+          setMigratePending({encryptedData: content, fromServerBackup: true});
+        }
+        setBackupBusy(false);
+        return;
+      }
+      if (SELF_HOSTED) {
+        const r = await fetch('/api/import', {
+          method:'POST',
+          headers:{Authorization:`Bearer ${s.token}`,'Content-Type':'application/json'},
+          body: JSON.stringify({encryptedData: content})
+        });
+        if (!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(`Restore fehlgeschlagen: ${e.error||r.status}`); }
+        const j = await r.json();
+        _ghSha = String(j.version);
+        localStorage.setItem(GH_SHA_KEY, _ghSha);
+      } else {
+        const fetched = await ghFetchFile(s.token, s.repo||'', s.path||'');
+        const newSha = await ghPushFile(s.token, s.repo||'', s.path||'', content, fetched.sha, `Restore from backup ${backup.name||backup.id}`);
+        _ghSha = newSha;
+      }
       setBackupInfo('✓ Wiederhergestellt — bitte Seite neu laden.');
     } catch(e) { setBackupErr(e.message); }
     setBackupBusy(false);
@@ -1899,7 +1933,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
               <div style={{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:10,padding:16,marginBottom:10}}>
                 <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:8}}>🔑 Altes Passwort erforderlich</div>
                 {migratePending.exportSalt ? (
-                  // V2: simple password-only flow
+                  // V2: simple password-only flow (migration export file)
                   <>
                     <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
                       Migration-Export erkannt. Gib dein <strong>altes CRM-Passwort</strong> ein — die Daten werden automatisch in dein neues Konto übernommen.
@@ -1915,11 +1949,28 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
                       <button className="btn btn-ghost btn-sm" onClick={()=>{setMigratePending(null);setMigrateOldPw('');setBackupErr('');}}>Abbrechen</button>
                     </div>
                   </>
-                ) : (
-                  // V1 fallback: need localStorage data
+                ) : migratePending.localSalt ? (
+                  // V3: server backup, salt still in localStorage — password only
                   <>
                     <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
-                      Dieses Backup hat kein eingebettetes Key-Export. Bitte erstelle im alten CRM einen <strong>Migration-Export</strong> (Einstellungen → Backup → 📦 Migration-Export). Falls das nicht möglich ist:<br/><br/>
+                      Dieses Backup wurde mit einem anderen Schlüssel verschlüsselt. Gib das <strong>Passwort ein, das du damals verwendet hast</strong> — die Daten werden automatisch mit deinem aktuellen Schlüssel neu verschlüsselt.
+                    </div>
+                    <input type="password" placeholder="Altes Passwort" value={migrateOldPw} onChange={e=>setMigrateOldPw(e.target.value)}
+                      style={{width:'100%',fontSize:13,padding:'8px 10px',borderRadius:7,border:'1px solid #FCD34D',background:'#FFFEF0',marginBottom:10,boxSizing:'border-box'}}
+                      autoFocus onKeyDown={e=>e.key==='Enter'&&doMigrateImport()}
+                    />
+                    <div style={{display:'flex',gap:8}}>
+                      <button className="btn btn-primary btn-sm" onClick={doMigrateImport} disabled={migrateBusy||!migrateOldPw}>
+                        {migrateBusy?'Importiere…':'✓ Importieren'}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>{setMigratePending(null);setMigrateOldPw('');setBackupErr('');}}>Abbrechen</button>
+                    </div>
+                  </>
+                ) : (
+                  // V1 fallback: localStorage cleared, need manual console data
+                  <>
+                    <div style={{fontSize:12,color:'#78350F',marginBottom:10,lineHeight:1.6}}>
+                      Dieses Backup wurde mit einem anderen Schlüssel verschlüsselt. Bitte erstelle im alten CRM einen <strong>Migration-Export</strong> (Einstellungen → Backup → 📦 Migration-Export). Falls das nicht möglich ist:<br/><br/>
                       Öffne das alte CRM, drücke <code style={{background:'rgba(0,0,0,0.08)',padding:'1px 4px',borderRadius:3}}>F12</code> → Konsole → ausführen:
                     </div>
                     <div style={{background:'#1E1B18',color:'#E2DDD8',fontFamily:'monospace',fontSize:11.5,padding:'10px 13px',borderRadius:8,marginBottom:10,userSelect:'all',wordBreak:'break-all'}}>
