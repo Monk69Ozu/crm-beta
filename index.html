@@ -399,15 +399,20 @@ async function saveCloudRecovery(email, password, recoveryCode, masterKey, ghSet
 
 async function verifyPassword(password) {
   const salt = getSalt();
+  if (!salt) { console.error('[auth] No salt in localStorage'); return null; }
   const wrapKey = await deriveKey(password, salt);
   try {
-    const v = await aesDecrypt(wrapKey, JSON.parse(localStorage.getItem(VERIFY_KEY)));
-    if (v !== VERIFY_STR) return null;
+    const verifyRaw = localStorage.getItem(VERIFY_KEY);
+    if (!verifyRaw) { console.error('[auth] VERIFY_KEY missing'); return null; }
+    let verifyBlob;
+    try { verifyBlob = JSON.parse(verifyRaw); } catch(e) { console.error('[auth] VERIFY_KEY not valid JSON'); return null; }
+    const v = await aesDecrypt(wrapKey, verifyBlob);
+    if (v !== VERIFY_STR) { console.error('[auth] Verify string mismatch — wrong password'); return null; }
     const mkRaw = localStorage.getItem(MASTER_KEY_STORE);
-    if (!mkRaw) return null;
+    if (!mkRaw) { console.error('[auth] MASTER_KEY_STORE missing'); return null; }
     const mkB64 = await aesDecrypt(wrapKey, JSON.parse(mkRaw));
     return await importMasterKeyFromB64(mkB64);
-  } catch(e) { return null; }
+  } catch(e) { console.error('[auth] verifyPassword failed:', e.message); return null; }
 }
 
 async function getMasterKeyB64(masterKey) {
@@ -451,12 +456,13 @@ async function loadEncrypted(key) {
       _ghSha = fetched.sha;
       localStorage.setItem(GH_SHA_KEY, fetched.sha); // persist SHA
       if (fetched.content) {
+        // Decrypt FIRST — only overwrite localStorage after confirmed success
+        const decrypted = await aesDecrypt(key, fetched.content);
         localStorage.setItem(DATA_KEY, JSON.stringify(fetched.content));
-        // Snapshot on every login-load so you always have a fresh restore point
         saveLocalSnapshot(fetched.content); _lastSnapAt = Date.now();
         _ghSyncState = {state:'ok', at:Date.now()};
         _notifySync && _notifySync();
-        return await aesDecrypt(key, fetched.content);
+        return decrypted;
       }
     } catch(e) {
       _ghSyncState = {state:'error', message:e.message, at:Date.now()};
@@ -1167,12 +1173,23 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
             {busy?<><span className="spinner" style={{borderTopColor:'#555',borderColor:'rgba(0,0,0,0.1)'}}></span> …</>:isSetup?'Konto erstellen →':'Anmelden →'}
           </button>
         </div>
-        {!isSetup && onForgotPassword && SELF_HOSTED && (
-          <div style={{textAlign:'center',marginTop:14}}>
-            <button onClick={onForgotPassword} style={{background:'none',border:'none',color:'rgba(255,255,255,0.35)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
-              onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
-              onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.35)'}>
-              Passwort vergessen?
+        {!isSetup && (
+          <div style={{textAlign:'center',marginTop:14,display:'flex',justifyContent:'center',gap:18,flexWrap:'wrap'}}>
+            {onForgotPassword && SELF_HOSTED && (
+              <button onClick={onForgotPassword} style={{background:'none',border:'none',color:'rgba(255,255,255,0.35)',fontSize:12.5,cursor:'pointer',padding:0,transition:'color .15s'}}
+                onMouseEnter={e=>e.target.style.color='rgba(255,255,255,0.7)'}
+                onMouseLeave={e=>e.target.style.color='rgba(255,255,255,0.35)'}>
+                Passwort vergessen?
+              </button>
+            )}
+            <button onClick={()=>{
+              // Show localStorage key diagnostics to aid debugging
+              const hasVerify = !!localStorage.getItem('webars_verify_v1');
+              const hasSalt   = !!localStorage.getItem('webars_salt_v1');
+              const hasMk     = !!localStorage.getItem('webars_master_v1');
+              alert(`Diagnose:\nVERIFY_KEY: ${hasVerify}\nSALT_KEY: ${hasSalt}\nMASTER_KEY: ${hasMk}\n\nFalls alle fehlen: Seite neu laden und "Einrichten" wählen.\nFalls vorhanden: Passwort ist falsch oder Browser-Daten wurden verändert.`);
+            }} style={{background:'none',border:'none',color:'rgba(255,255,255,0.2)',fontSize:11.5,cursor:'pointer',padding:0}}>
+              Diagnose
             </button>
           </div>
         )}
@@ -1369,11 +1386,13 @@ function ChangePasswordModal({cryptoKey,onClose}){
     if(newPw!==newPw2){setErr('Passwörter stimmen nicht überein.');return;}
     setBusy(true);setErr('');
     try{
-      const key=await verifyPassword(curPw);
-      if(!key){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
-      await rewrapMasterKey(cryptoKey,newPw);
-      try{await storeKeyForDevice(cryptoKey);}catch(e){}
-      try{await escrowMasterKey(cryptoKey);}catch(e){}
+      // verifyPassword returns an extractable copy of the master key — always use this,
+      // NOT the cryptoKey prop which may be non-extractable (e.g. after auto-login)
+      const verifiedKey=await verifyPassword(curPw);
+      if(!verifiedKey){setErr('Aktuelles Passwort ist falsch.');setBusy(false);return;}
+      await rewrapMasterKey(verifiedKey,newPw);
+      try{await storeKeyForDevice(verifiedKey);}catch(e){}
+      try{await escrowMasterKey(verifiedKey);}catch(e){}
       setDone(true);
     }catch(e){setErr('Fehler: '+e.message);}
     setBusy(false);
@@ -7043,7 +7062,8 @@ function AuthWrapper(){
         try{
           const dk = await getOrCreateDeviceKey();
           const b64key = await aesDecrypt(dk, JSON.parse(localStorage.getItem(PKEY_ENC_STORE)));
-          const key = await crypto.subtle.importKey('raw',fromB64(b64key),{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+          // extractable:true so escrowMasterKey and storeKeyForDevice work correctly
+          const key = await crypto.subtle.importKey('raw',fromB64(b64key),{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
           if(key){
             // Load GitHub settings first (so loadEncrypted can fetch from GitHub)
             if(hasGithubSettings()){
