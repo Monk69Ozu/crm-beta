@@ -10,10 +10,17 @@
 //    PORT          — (optional) defaults to 3000
 // ══════════════════════════════════════════════════════════════════
 
-const express = require('express');
-const mysql   = require('mysql2/promise');
-const path    = require('path');
-const fs      = require('fs');
+const express    = require('express');
+const mysql      = require('mysql2/promise');
+const path       = require('path');
+const fs         = require('fs');
+const nodeCrypto = require('crypto');
+
+// Nodemailer is optional — if missing, reset links are logged to console instead
+let nodemailer = null;
+try { nodemailer = require('nodemailer'); } catch(e) {
+  console.warn('⚠ nodemailer not installed — password reset links will be logged to console');
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -118,6 +125,29 @@ async function initDb() {
         UNIQUE KEY uk_name (name)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_key_escrow (
+        id         INT          NOT NULL DEFAULT 1,
+        content    LONGTEXT     NOT NULL,
+        updated_at DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token      VARCHAR(64)  NOT NULL,
+        email_hash VARCHAR(32)  NOT NULL,
+        expires_at DATETIME     NOT NULL,
+        PRIMARY KEY (token)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    // Add email-reset columns to recovery_blobs (idempotent — ignore if already exist)
+    for (const ddl of [
+      'ALTER TABLE recovery_blobs ADD COLUMN email_reset_key VARCHAR(256) DEFAULT NULL',
+      'ALTER TABLE recovery_blobs ADD COLUMN email_reset_enc LONGTEXT DEFAULT NULL',
+    ]) {
+      try { await conn.query(ddl); } catch(e) { /* column already exists — ignore */ }
+    }
     console.log('✓ Database tables ready');
   } finally {
     conn.release();
@@ -326,6 +356,29 @@ app.post('/api/backups', requireAuth, async (_req, res) => {
   }
 });
 
+// ── Master-Key Escrow (encrypted with API_SECRET-derived key) ────
+app.get('/api/key-escrow', requireAuth, async (_req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT content FROM crm_key_escrow WHERE id = 1');
+    if (!rows.length) return res.status(404).json({ error: 'No escrow yet' });
+    res.json(fromRow(rows[0], 'content'));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/key-escrow', requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      'INSERT INTO crm_key_escrow (id, content) VALUES (1, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
+      [toJson(req.body)]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Import JSON backup from old GitHub-based CRM ─────────────────
 app.post('/api/import', requireAuth, async (req, res) => {
   const { encryptedData } = req.body;
@@ -346,6 +399,152 @@ app.post('/api/import', requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   } finally {
     conn.release();
+  }
+});
+
+// ── Email-reset data (no auth — stored by client after login) ────
+// Check if reset data exists for a given email hash
+app.get('/api/recovery/:hash/email-reset', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT (email_reset_key IS NOT NULL) AS has_reset FROM recovery_blobs WHERE email_hash = ?',
+      [req.params.hash]
+    );
+    res.json({ has_reset: rows.length > 0 && rows[0].has_reset === 1 });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Store reset data (client pushes after login; never overwrites existing data)
+app.put('/api/recovery/:hash/email-reset', async (req, res) => {
+  const { email_reset_key, email_reset_enc } = req.body;
+  if (!email_reset_key || !email_reset_enc) {
+    return res.status(400).json({ error: 'email_reset_key and email_reset_enc required' });
+  }
+  try {
+    // MySQL: only set if currently NULL (don't overwrite once established)
+    await pool.query(
+      `INSERT INTO recovery_blobs (email_hash, payload, email_reset_key, email_reset_enc)
+       VALUES (?, '{}', ?, ?)
+       ON DUPLICATE KEY UPDATE
+         email_reset_key = IF(email_reset_key IS NULL, VALUES(email_reset_key), email_reset_key),
+         email_reset_enc = IF(email_reset_enc IS NULL, VALUES(email_reset_enc), email_reset_enc)`,
+      [req.params.hash, email_reset_key, email_reset_enc]
+    );
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Trigger a password-reset email for a given email hash
+app.post('/api/forgot-password', async (req, res) => {
+  const { email, emailHash } = req.body;
+  if (!emailHash) return res.status(400).json({ error: 'emailHash required' });
+  try {
+    // Look up reset data (don't reveal if hash exists)
+    const [rows] = await pool.query(
+      'SELECT email_reset_key FROM recovery_blobs WHERE email_hash = ? AND email_reset_key IS NOT NULL',
+      [emailHash]
+    );
+    if (!rows.length) {
+      return res.json({ ok: true, hint: 'no_reset_data' });
+    }
+
+    // Generate a one-time token (64 hex chars, valid 1 hour)
+    const token     = nodeCrypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await pool.query(
+      'INSERT INTO password_resets (token, email_hash, expires_at) VALUES (?, ?, ?)',
+      [token, emailHash, expiresAt.toISOString().slice(0, 19).replace('T', ' ')]
+    );
+    // Clean up expired tokens
+    await pool.query('DELETE FROM password_resets WHERE expires_at < NOW()');
+
+    // Build reset URL — prefer SMTP_RESET_BASE_URL env var, then Origin header, then fallback
+    const baseUrl   = (process.env.SMTP_RESET_BASE_URL || '').replace(/\/$/, '')
+                      || (req.headers.origin || 'https://crm.webars.at');
+    const resetUrl  = `${baseUrl}/?reset=${token}`;
+    const recipient = email || 'CRM-Administrator';
+
+    // Try to send email; fall back to console logging
+    let emailSent = false;
+    if (nodemailer && process.env.SMTP_HOST) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host:   process.env.SMTP_HOST,
+          port:   parseInt(process.env.SMTP_PORT) || 587,
+          secure: parseInt(process.env.SMTP_PORT) === 465,
+          auth:   { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+        });
+        await transporter.sendMail({
+          from:    process.env.SMTP_FROM || process.env.SMTP_USER,
+          to:      email || process.env.SMTP_FROM || process.env.SMTP_USER,
+          subject: 'WebArs CRM – Passwort zurücksetzen',
+          html: `
+            <p>Hallo,</p>
+            <p>Du hast eine Passwort-Zurücksetzung für dein WebArs CRM angefordert.</p>
+            <p><a href="${resetUrl}" style="font-size:16px;font-weight:bold">→ Passwort zurücksetzen</a></p>
+            <p style="color:#888;font-size:12px">Dieser Link ist 1 Stunde gültig und kann nur einmal verwendet werden.<br>
+            URL: ${resetUrl}</p>
+          `,
+          text: `WebArs CRM – Passwort zurücksetzen\n\nLink: ${resetUrl}\n\n(Gültig 1 Stunde, einmalig verwendbar)`
+        });
+        emailSent = true;
+        console.log(`✓ Password reset email sent to ${email || 'configured SMTP recipient'}`);
+      } catch(e) {
+        console.error('❌ Email send failed:', e.message);
+      }
+    }
+
+    if (!emailSent) {
+      console.log(`\n${'═'.repeat(60)}`);
+      console.log(`  PASSWORT-RESET LINK (kein SMTP konfiguriert)`);
+      console.log(`  Empfänger: ${recipient}`);
+      console.log(`  Link: ${resetUrl}`);
+      console.log(`  Gültig bis: ${expiresAt.toISOString()}`);
+      console.log(`${'═'.repeat(60)}\n`);
+    }
+
+    res.json({ ok: true, emailSent });
+  } catch(e) {
+    console.error('POST /api/forgot-password:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Validate a reset token and return the email-reset key + enc (one-time)
+app.get('/api/reset-token/:token', async (req, res) => {
+  try {
+    const [tokenRows] = await pool.query(
+      'SELECT email_hash, expires_at FROM password_resets WHERE token = ?',
+      [req.params.token]
+    );
+    if (!tokenRows.length) {
+      return res.status(404).json({ error: 'Token ungültig oder bereits verwendet.' });
+    }
+    if (new Date(tokenRows[0].expires_at) < new Date()) {
+      await pool.query('DELETE FROM password_resets WHERE token = ?', [req.params.token]);
+      return res.status(410).json({ error: 'Token abgelaufen. Bitte neuen Reset anfordern.' });
+    }
+    const [resetRows] = await pool.query(
+      'SELECT email_reset_key, email_reset_enc FROM recovery_blobs WHERE email_hash = ?',
+      [tokenRows[0].email_hash]
+    );
+    if (!resetRows.length || !resetRows[0].email_reset_key) {
+      return res.status(404).json({ error: 'Keine Reset-Daten gefunden. Bitte zuerst einloggen.' });
+    }
+    // Invalidate token immediately (one-time use)
+    await pool.query('DELETE FROM password_resets WHERE token = ?', [req.params.token]);
+
+    res.json({
+      email_reset_key: resetRows[0].email_reset_key,
+      email_reset_enc: resetRows[0].email_reset_enc,
+    });
+  } catch(e) {
+    console.error('GET /api/reset-token:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
