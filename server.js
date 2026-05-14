@@ -66,7 +66,10 @@ try {
     ...parseDbUrl(DB_URL),
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0,
+    queueLimit: 50,           // bound the queue so we fail fast under load instead of hanging
+    connectTimeout: 10000,    // 10s to establish a TCP+handshake (default is forever)
+    enableKeepAlive: true,    // recover from idle-killed connections (cloud DBs love to drop these)
+    keepAliveInitialDelay: 10000,
     timezone: '+00:00',
     // Store JSON as text (mysql2 auto-parses JSON columns)
     typeCast: function(field, next) {
@@ -221,10 +224,20 @@ const fromRow = (row, col) => {
 app.use(express.json({ limit: '20mb' }));
 
 // ── Auth middleware ──────────────────────────────────────────────
+// Uses constant-time comparison to defeat timing attacks.
+const API_SECRET_BUF = Buffer.from(API_SECRET, 'utf8');
 function requireAuth(req, res, next) {
   const auth  = (req.headers.authorization || '').trim();
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : auth;
-  if (!token || token !== API_SECRET) {
+  if (!token) return res.status(401).json({ error: 'Unauthorized: invalid API key' });
+  const tokBuf = Buffer.from(token, 'utf8');
+  // Length mismatch → reject without revealing secret length via early-exit timing
+  if (tokBuf.length !== API_SECRET_BUF.length) {
+    // Still call timingSafeEqual on equal-length dummy to keep timing constant
+    nodeCrypto.timingSafeEqual(API_SECRET_BUF, API_SECRET_BUF);
+    return res.status(401).json({ error: 'Unauthorized: invalid API key' });
+  }
+  if (!nodeCrypto.timingSafeEqual(tokBuf, API_SECRET_BUF)) {
     return res.status(401).json({ error: 'Unauthorized: invalid API key' });
   }
   next();
@@ -239,15 +252,16 @@ app.get('/api/validate', requireAuth, (_req, res) => {
   res.json({ ok: true });
 });
 
-// ── Diagnostic endpoint (does NOT leak the secret) ───────────────
-app.get('/api/debug-auth', (req, res) => {
+// ── Diagnostic endpoint (REQUIRES auth — only useful for diagnosing trim/quote issues
+//    AFTER you have a working token. Public access would let an attacker probe the
+//    secret length + boundary chars + verify guesses without rate-limit.) ─────────
+app.get('/api/debug-auth', requireAuth, (req, res) => {
   const auth  = (req.headers.authorization || '').trim();
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : auth;
   res.json({
     receivedTokenLength: token.length,
     expectedSecretLength: API_SECRET.length,
     match: token === API_SECRET,
-    // First/last char codes — helps spot wrapping quotes, hidden whitespace, etc.
     receivedFirstCharCode: token.length ? token.charCodeAt(0) : null,
     receivedLastCharCode:  token.length ? token.charCodeAt(token.length - 1) : null,
     expectedFirstCharCode: API_SECRET.length ? API_SECRET.charCodeAt(0) : null,
@@ -259,6 +273,7 @@ app.get('/api/debug-auth', (req, res) => {
 
 // ── CRM data (encrypted blob) ────────────────────────────────────
 app.get('/api/data', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT content, version FROM crm_data WHERE id = 1');
     if (!rows.length) return res.json({ content: null, version: 0 });
@@ -271,6 +286,7 @@ app.get('/api/data', requireAuth, async (_req, res) => {
 
 // Optimistic-locking write
 app.put('/api/data', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   const { content, version } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
   const conn = await pool.getConnection();
@@ -309,7 +325,12 @@ app.put('/api/data', requireAuth, async (req, res) => {
 });
 
 // ── Recovery blobs (no auth — content is client-side encrypted) ──
+// SAFETY: hash must be exactly 16 hex chars (matches emailHash16 in frontend).
+// This prevents DoS by uploading to arbitrary keys.
+const HASH_RE = /^[0-9a-f]{16}$/;
 app.get('/api/recovery/:hash', async (req, res) => {
+  if (!HASH_RE.test(req.params.hash)) return res.status(400).json({ error: 'invalid hash' });
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT payload FROM recovery_blobs WHERE email_hash = ?', [req.params.hash]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -320,10 +341,15 @@ app.get('/api/recovery/:hash', async (req, res) => {
 });
 
 app.put('/api/recovery/:hash', async (req, res) => {
+  if (!HASH_RE.test(req.params.hash)) return res.status(400).json({ error: 'invalid hash' });
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  // Cap payload size for this specific route — anything bigger is abuse, not a real recovery blob.
+  const bodyStr = toJson(req.body);
+  if (bodyStr.length > 64 * 1024) return res.status(413).json({ error: 'payload too large' });
   try {
     await pool.query(
       'INSERT INTO recovery_blobs (email_hash, payload) VALUES (?, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload)',
-      [req.params.hash, toJson(req.body)]
+      [req.params.hash, bodyStr]
     );
     res.json({ ok: true });
   } catch (e) {
@@ -332,8 +358,12 @@ app.put('/api/recovery/:hash', async (req, res) => {
 });
 
 // ── Public form definitions ──────────────────────────────────────
+// Slug must be safe-URL chars only and ≤128 (matches DB column).
+const SLUG_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 app.get('/forms/:slug', async (req, res) => {
   const slug = req.params.slug.replace(/\.json$/, '');
+  if (!SLUG_RE.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT content FROM form_definitions WHERE slug = ?', [slug]);
     if (!rows.length) return res.status(404).json({ error: 'Form not found' });
@@ -344,6 +374,8 @@ app.get('/forms/:slug', async (req, res) => {
 });
 
 app.put('/api/forms/:slug', requireAuth, async (req, res) => {
+  if (!SLUG_RE.test(req.params.slug)) return res.status(400).json({ error: 'invalid slug' });
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     await pool.query(
       'INSERT INTO form_definitions (slug, content) VALUES (?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
@@ -356,6 +388,8 @@ app.put('/api/forms/:slug', requireAuth, async (req, res) => {
 });
 
 app.delete('/api/forms/:slug', requireAuth, async (req, res) => {
+  if (!SLUG_RE.test(req.params.slug)) return res.status(400).json({ error: 'invalid slug' });
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     await pool.query('DELETE FROM form_definitions WHERE slug = ?', [req.params.slug]);
     res.json({ ok: true });
@@ -366,6 +400,7 @@ app.delete('/api/forms/:slug', requireAuth, async (req, res) => {
 
 // ── Jarvis API summary ───────────────────────────────────────────
 app.get('/api/summary', async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT content FROM crm_summary WHERE id = 1');
     if (!rows.length) return res.status(404).json({ error: 'No summary yet' });
@@ -376,6 +411,7 @@ app.get('/api/summary', async (_req, res) => {
 });
 
 app.put('/api/summary', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     await pool.query(
       'INSERT INTO crm_summary (id, content) VALUES (1, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
@@ -389,6 +425,7 @@ app.put('/api/summary', requireAuth, async (req, res) => {
 
 // ── Backups ──────────────────────────────────────────────────────
 app.get('/api/backups', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT id, name, tier, created_at FROM crm_backups ORDER BY created_at DESC LIMIT 500');
     res.json({ backups: rows });
@@ -398,8 +435,11 @@ app.get('/api/backups', requireAuth, async (_req, res) => {
 });
 
 app.get('/api/backups/:id', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
   try {
-    const [rows] = await pool.query('SELECT content, name, created_at FROM crm_backups WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query('SELECT content, name, created_at FROM crm_backups WHERE id = ?', [id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json({ content: fromRow(rows[0], 'content'), name: rows[0].name });
   } catch (e) {
@@ -408,6 +448,7 @@ app.get('/api/backups/:id', requireAuth, async (req, res) => {
 });
 
 app.post('/api/backups', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const note = (req.body && typeof req.body.note === 'string') ? req.body.note.slice(0, 40) : '';
     await createBackup('manual', note);
@@ -422,11 +463,13 @@ app.post('/api/backups', requireAuth, async (req, res) => {
 // with tier='pre-restore' (kept forever) — so a restore can NEVER lose data.
 app.post('/api/backups/:id/restore', requireAuth, async (req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     // 1) Verify target backup exists
-    const [target] = await conn.query('SELECT content, name FROM crm_backups WHERE id = ?', [req.params.id]);
+    const [target] = await conn.query('SELECT content, name FROM crm_backups WHERE id = ?', [id]);
     if (!target.length) {
       await conn.rollback();
       return res.status(404).json({ error: 'Backup nicht gefunden' });
@@ -449,7 +492,7 @@ app.post('/api/backups/:id/restore', requireAuth, async (req, res) => {
       await conn.query('INSERT INTO crm_data (id, content, version) VALUES (1, ?, ?)', [target[0].content, newVer]);
     }
     await conn.commit();
-    console.log(`✓ Restored backup ${target[0].name} (id=${req.params.id}), pre-restore snapshot saved`);
+    console.log(`✓ Restored backup ${target[0].name} (id=${id}), pre-restore snapshot saved`);
     res.json({ ok: true, version: newVer, restored: target[0].name });
   } catch (e) {
     await conn.rollback();
@@ -544,6 +587,7 @@ app.put('/api/auth-blob', requireAuth, async (req, res) => {
 // ── Legacy Master-Key Escrow (encrypted with API_SECRET-derived key) ──
 // Kept for backwards-compat / migration only. New flows use crm_auth.
 app.get('/api/key-escrow', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT content FROM crm_key_escrow WHERE id = 1');
     if (!rows.length) return res.status(404).json({ error: 'No escrow yet' });
@@ -554,6 +598,7 @@ app.get('/api/key-escrow', requireAuth, async (_req, res) => {
 });
 
 app.put('/api/key-escrow', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     await pool.query(
       'INSERT INTO crm_key_escrow (id, content) VALUES (1, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
@@ -697,6 +742,7 @@ app.post('/api/reset-token/:token/confirm', async (req, res) => {
 // SAFETY: always snapshots current data as a pre-restore backup before overwriting,
 // so an accidental re-import can never destroy data.
 app.post('/api/import', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   const { encryptedData } = req.body;
   if (!encryptedData) return res.status(400).json({ error: 'encryptedData required' });
   const conn = await pool.getConnection();
@@ -739,20 +785,30 @@ app.post('/api/admin/reset', requireAuth, (_req, res) => {
 });
 
 // ── Frontend (inject SELF_HOSTED flag) ───────────────────────────
+// Cache the injected HTML once at startup — index.html is read-only at runtime
+// and only changes between deploys. Avoids a synchronous fs read per request.
 const INDEX_PATH = path.join(__dirname, 'index.html');
+let INDEX_HTML_CACHED = null;
+let INDEX_HTML_ERR = null;
+try {
+  const raw = fs.readFileSync(INDEX_PATH, 'utf8');
+  const inject = `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`;
+  if (!raw.includes('<script>')) {
+    INDEX_HTML_ERR = 'index.html has no <script> tag — cannot inject API token. Login will not work.';
+    console.error('❌  ' + INDEX_HTML_ERR);
+  } else {
+    INDEX_HTML_CACHED = raw.replace('<script>', inject);
+    console.log('✓ index.html cached and patched with self-hosted token');
+  }
+} catch(e) {
+  INDEX_HTML_ERR = 'Could not load index.html: ' + e.message;
+  console.error('❌  ' + INDEX_HTML_ERR);
+}
 
 app.get('/', (_req, res) => {
-  try {
-    let html = fs.readFileSync(INDEX_PATH, 'utf8');
-    html = html.replace(
-      '<script>',
-      `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`
-    );
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
-  } catch (e) {
-    res.status(500).send('Could not load index.html: ' + e.message);
-  }
+  if (INDEX_HTML_ERR) return res.status(500).send(INDEX_HTML_ERR);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(INDEX_HTML_CACHED);
 });
 
 app.use(express.static(__dirname, { index: false }));
@@ -902,6 +958,17 @@ async function initDbWithRetry() {
     }
   }
 }
+
+// ── Process-level safety net ─────────────────────────────────────
+// Log instead of crash on unhandled rejections; same for uncaught exceptions
+// (we keep running because Coolify+/health will restart the container if it
+// stops responding, but a single unhandled error mid-request shouldn't kill it).
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠ unhandledRejection:', reason && reason.stack || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('⚠ uncaughtException:', err && err.stack || err);
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀  WebArs CRM server listening on port ${PORT}`);
