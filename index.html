@@ -620,25 +620,42 @@ async function saveEncrypted(key, data) {
   }
 }
 async function loadEncrypted(key) {
-  // Try GitHub first if configured
+  // Try cloud/server first if configured
   if (_ghSettings) {
     try {
       const fetched = await ghFetchFile(_ghSettings.token, _ghSettings.repo, _ghSettings.path);
-      _ghSha = fetched.sha;
-      localStorage.setItem(GH_SHA_KEY, fetched.sha); // persist SHA
       if (fetched.content) {
-        // Decrypt FIRST — only overwrite localStorage after confirmed success
-        const decrypted = await aesDecrypt(key, fetched.content);
+        // CRITICAL: decrypt BEFORE updating _ghSha. If the key doesn't match the
+        // cloud blob, we MUST NOT update version state — otherwise a subsequent
+        // save would PUT with the matched version and overwrite cloud data
+        // (silent data loss for users who logged in with the wrong key).
+        let decrypted;
+        try {
+          decrypted = await aesDecrypt(key, fetched.content);
+        } catch(decErr) {
+          // Key mismatch — leave _ghSha untouched so optimistic locking blocks future saves
+          _ghSyncState = {state:'key_mismatch', message:'Server-Daten konnten mit deinem aktuellen Schlüssel nicht entschlüsselt werden. Anmeldung mit falschem Passwort? Bitte ausloggen.', at:Date.now()};
+          _notifySync && _notifySync();
+          throw new Error('KEY_MISMATCH');
+        }
+        // Decryption succeeded — NOW commit version + cache
+        _ghSha = fetched.sha;
+        localStorage.setItem(GH_SHA_KEY, fetched.sha);
         localStorage.setItem(DATA_KEY, JSON.stringify(fetched.content));
         saveLocalSnapshot(fetched.content); _lastSnapAt = Date.now();
         _ghSyncState = {state:'ok', at:Date.now()};
         _notifySync && _notifySync();
         return decrypted;
+      } else {
+        // Server has no content yet — safe to update SHA pointer
+        _ghSha = fetched.sha;
+        localStorage.setItem(GH_SHA_KEY, fetched.sha);
       }
     } catch(e) {
+      if (e.message === 'KEY_MISMATCH') throw e; // propagate for caller to handle
       _ghSyncState = {state:'error', message:e.message, at:Date.now()};
       _notifySync && _notifySync();
-      // GitHub offline — _ghSha already loaded from localStorage at startup, so SHA stays valid
+      // Cloud offline — _ghSha stays valid from localStorage
     }
   }
   const raw = localStorage.getItem(DATA_KEY);
@@ -1307,7 +1324,19 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
       } else {
         const key = await verifyPassword(pw);
         if (!key) { setErr('Falsches Passwort.'); setBusy(false); return; }
-        const data = await loadEncrypted(key);
+        let data;
+        try {
+          data = await loadEncrypted(key);
+        } catch(loadErr) {
+          if (loadErr && loadErr.message === 'KEY_MISMATCH') {
+            // Password unlocked the wrap key but resulting master key cannot
+            // decrypt server data → auth-blob and crm_data are out of sync.
+            setErr('Anmeldung erfolgreich, aber Server-Daten passen nicht zum Schlüssel. Bitte Admin kontaktieren oder ein Backup wiederherstellen.');
+            setBusy(false);
+            return;
+          }
+          throw loadErr;
+        }
         try { await storeKeyForDevice(key); } catch(e) {}
         onDone(key, data || DEFAULT_STATE, OWNER_EMAIL);
       }
@@ -1612,8 +1641,24 @@ function ChangePasswordModal({cryptoKey,onClose}){
     setBusy(true);setErr('');
     try{
       if(SELF_HOSTED && noServerAuth){
-        // No crm_auth yet — initialize with current master key + new password
-        // cryptoKey is extractable (set to true in all login paths)
+        // No crm_auth yet — initialize with current master key + new password.
+        // SAFETY: verify cryptoKey actually decrypts current server data before
+        // locking it in as the canonical master key. Otherwise we'd save a key
+        // that can't decrypt the user's own data.
+        try {
+          const r = await fetch('/api/data', {headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`}});
+          if (r.ok) {
+            const j = await r.json();
+            if (j && j.content) {
+              try { await aesDecrypt(cryptoKey, j.content); }
+              catch(decErr) {
+                setErr('Dein aktueller Sitzungs-Schlüssel passt nicht zu den Server-Daten. Bitte ausloggen und mit dem korrekten Passwort neu anmelden, bevor du das Passwort am Server festlegst.');
+                setBusy(false);
+                return;
+              }
+            }
+          }
+        } catch(e) { /* fetch failure → proceed (offline-friendly) */ }
         const masterB64 = await exportMasterKeyB64(cryptoKey);
         await setupPasswordServer(newPw, masterB64);
         try{await storeKeyForDevice(cryptoKey);}catch(e){}
@@ -7659,7 +7704,20 @@ function AuthWrapper(){
             if(hasGithubSettings()){
               try{ await loadGithubSettings(key); }catch(e){}
             }
-            let data = await loadEncrypted(key);
+            let data;
+            try {
+              data = await loadEncrypted(key);
+            } catch(loadErr) {
+              if (loadErr && loadErr.message === 'KEY_MISMATCH') {
+                // Stored device-key cannot decrypt server data → force fresh password login
+                console.warn('[auto-login] key mismatch — clearing device key, going to login');
+                localStorage.removeItem(PKEY_ENC_STORE);
+                localStorage.removeItem(DEVICE_KEY_STORE);
+                setPhase('login');
+                return;
+              }
+              throw loadErr;
+            }
             console.log('[auto-login] success');
             setCryptoKey(key); setCrmData(data || DEFAULT_STATE); setPhase('app'); return;
           }
