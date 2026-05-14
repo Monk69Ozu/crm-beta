@@ -556,7 +556,7 @@ app.get('/', (_req, res) => {
     let html = fs.readFileSync(INDEX_PATH, 'utf8');
     html = html.replace(
       '<script>',
-      '<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\n'
+      `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`
     );
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
