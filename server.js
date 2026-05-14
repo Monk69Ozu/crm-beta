@@ -149,16 +149,19 @@ async function initDb() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     // Add 'used' column to password_resets if it was created by an older version.
-    // Try the ALTER directly and ignore "Duplicate column" errors — works on every MySQL/MariaDB version.
     try {
       await conn.query(`ALTER TABLE password_resets ADD COLUMN used TINYINT(1) NOT NULL DEFAULT 0`);
       console.log('✓ Migrated password_resets: added used column');
     } catch(e) {
-      if (/Duplicate column/i.test(e.message)) {
-        console.log('✓ password_resets.used already exists');
-      } else {
-        console.error('⚠ password_resets migration failed:', e.message);
-        throw e;
+      if (!/Duplicate column/i.test(e.message)) { console.error('⚠ password_resets.used:', e.message); throw e; }
+    }
+    // Drop legacy columns that older versions may have left behind (would block INSERTs in strict mode).
+    for (const legacyCol of ['email_hash','email','user_id','salt','wrapped_master']) {
+      try {
+        await conn.query(`ALTER TABLE password_resets DROP COLUMN ${legacyCol}`);
+        console.log(`✓ Dropped legacy column password_resets.${legacyCol}`);
+      } catch(e) {
+        // Most common: "check that column/key exists" — column doesn't exist, ignore
       }
     }
     // ── NEW UNIFIED AUTH TABLE ─────────────────────────────────────
