@@ -588,6 +588,10 @@ app.post('/api/forgot-password', async (req, res) => {
           port: SMTP_PORT,
           secure: SMTP_PORT === 465,
           auth: { user: SMTP_USER, pass: SMTP_PASS },
+          // Hard timeouts so a stuck SMTP server can't hang the request
+          connectionTimeout: 8000,  // 8s to establish TCP
+          greetingTimeout: 8000,    // 8s to receive SMTP greeting
+          socketTimeout: 15000,     // 15s for any socket operation
         });
         await transporter.sendMail({
           from: SMTP_FROM || SMTP_USER,
@@ -670,9 +674,12 @@ app.post('/api/reset-token/:token/confirm', async (req, res) => {
     // If wrapped_master sent, update crm_auth atomically with token consumption
     if (wrapped_master) {
       const [auth] = await conn.query('SELECT id FROM crm_auth WHERE id = 1 FOR UPDATE');
-      if (auth.length) {
-        await conn.query('UPDATE crm_auth SET wrapped_master = ? WHERE id = 1', [toJson(wrapped_master)]);
+      if (!auth.length) {
+        // crm_auth row missing — refuse to consume the token so the user can retry once auth is initialised
+        await conn.rollback();
+        return res.status(409).json({ error: 'Auth row not initialised on server. Bitte zuerst einloggen damit das Server-Auth angelegt wird.' });
       }
+      await conn.query('UPDATE crm_auth SET wrapped_master = ? WHERE id = 1', [toJson(wrapped_master)]);
     }
     await conn.query('UPDATE password_resets SET used = 1 WHERE token = ?', [req.params.token]);
     await conn.commit();
