@@ -486,6 +486,26 @@ app.post('/api/import', requireAuth, async (req, res) => {
   }
 });
 
+// ── Admin: Full Reset (clears all CRM data + escrow, keeps structure) ──────
+// POST /api/admin/reset  — requires Bearer API_SECRET
+// Wipes crm_data, crm_key_escrow, crm_backups, recovery_blobs so the owner
+// can do a clean setup after forgetting the password. Table schema stays intact.
+app.post('/api/admin/reset', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    await pool.query('DELETE FROM crm_data');
+    await pool.query('DELETE FROM crm_key_escrow');
+    await pool.query('DELETE FROM recovery_blobs');
+    await pool.query('DELETE FROM password_resets');
+    // Keep crm_backups and crm_summary intentionally — harmless
+    console.log('⚠ Admin reset executed — all CRM data cleared');
+    res.json({ ok: true, message: 'Alle CRM-Daten gelöscht. Bitte localStorage im Browser leeren und neu einrichten.' });
+  } catch (e) {
+    console.error('POST /api/admin/reset:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Frontend (inject SELF_HOSTED flag) ───────────────────────────
 const INDEX_PATH = path.join(__dirname, 'index.html');
 
