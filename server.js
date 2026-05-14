@@ -430,7 +430,7 @@ app.post('/api/forgot-password', async (req, res) => {
 
     // No SMTP or email failed — return reset URL directly (admin-only use case)
     console.log(`ℹ Password reset URL generated (no email sent): ${resetUrl}`);
-    res.json({ ok: true, emailSent: false, resetUrl });
+    res.json({ ok: true, emailSent: false, resetUrl, token });
   } catch (e) {
     console.error('POST /api/forgot-password:', e.message);
     res.status(500).json({ error: e.message });

@@ -1255,7 +1255,15 @@ function ForgotPasswordScreen({onBack}) {
       const r=await fetch('/api/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
       if(!r.ok){setErr('Server-Fehler. Bitte versuche es erneut.');setBusy(false);return;}
       const j=await r.json();
-      if(j.resetUrl)setResetUrl(j.resetUrl);
+      // Reconstruct URL using actual hostname (server APP_URL may be wrong/localhost)
+      if(j.resetUrl){
+        try{
+          const token=new URL(j.resetUrl).searchParams.get('reset')||j.resetUrl.split('reset=')[1];
+          setResetUrl(window.location.origin+'/?reset='+token);
+        }catch{setResetUrl(j.resetUrl);}
+      } else if(j.token){
+        setResetUrl(window.location.origin+'/?reset='+j.token);
+      }
       setDone(true);
     }catch(e){setErr('Fehler: '+e.message);}
     setBusy(false);
