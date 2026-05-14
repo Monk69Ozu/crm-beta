@@ -694,13 +694,23 @@ app.post('/api/reset-token/:token/confirm', async (req, res) => {
 });
 
 // ── Import JSON backup from old GitHub-based CRM ─────────────────
+// SAFETY: always snapshots current data as a pre-restore backup before overwriting,
+// so an accidental re-import can never destroy data.
 app.post('/api/import', requireAuth, async (req, res) => {
   const { encryptedData } = req.body;
   if (!encryptedData) return res.status(400).json({ error: 'encryptedData required' });
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const [rows] = await conn.query('SELECT version FROM crm_data WHERE id = 1 FOR UPDATE');
+    const [rows] = await conn.query('SELECT version, content FROM crm_data WHERE id = 1 FOR UPDATE');
+    // Snapshot existing data first (kept forever — pre-restore tier)
+    if (rows.length && rows[0].content) {
+      const snapName = `pre-import-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      await conn.query(
+        'INSERT INTO crm_backups (name, content, tier) VALUES (?, ?, ?)',
+        [snapName, rows[0].content, 'pre-restore']
+      );
+    }
     const newVer = rows.length ? rows[0].version + 1 : 1;
     await conn.query(
       'INSERT INTO crm_data (id, content, version) VALUES (1, ?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content), version = VALUES(version)',
