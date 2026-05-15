@@ -7167,8 +7167,11 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
         const known=new Set((leads||[]).map(l=>l.serverId));
         const newOnes=fresh.filter(l=>!known.has(l.id));
         if(newOnes.length){
+          const STD_KEYS=['name','email','phone','company','message','source','metadata'];
           const imported=newOnes.map(l=>{
             const p=l.payload||{};
+            // Preserve EVERYTHING the partner sent — known fields go into named slots,
+            // anything else lands in `extras` and is displayed as-is in the UI.
             return {
               id:'lead_'+(l.id)+'_'+Date.now().toString(36),
               serverId:l.id,
@@ -7180,7 +7183,8 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
               message:(p.message||'').toString(),
               source:(p.source||l.campaign||'').toString(),
               metadata:p.metadata&&typeof p.metadata==='object'?p.metadata:{},
-              extras:Object.fromEntries(Object.entries(p).filter(([k])=>!['name','email','phone','company','message','source','metadata'].includes(k))),
+              extras:Object.fromEntries(Object.entries(p).filter(([k])=>!STD_KEYS.includes(k))),
+              rawPayload:p, // keep the full original payload too for audit / future migrations
               receivedAt:l.receivedAt,
               sourceIp:l.sourceIp,
               status:'new',
@@ -7262,13 +7266,15 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
             </div>
           ):(
             <div style={{display:'grid',gap:12}}>
-              {newLeads.map(l=>(
+              {newLeads.map(l=>{
+                const extraEntries=Object.entries(l.extras||{}).filter(([,v])=>v!==null&&v!==undefined&&v!=='');
+                return (
                 <div key={l.id} style={{background:'white',borderRadius:14,padding:'16px 18px',border:'1px solid rgba(0,0,0,.06)'}}>
                   <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12,marginBottom:10}}>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
                         <span style={{fontSize:10,fontWeight:700,color:'#22c55e',background:'rgba(34,197,94,.12)',borderRadius:99,padding:'2px 8px'}}>NEU</span>
-                        <span style={{fontSize:11,color:'#A8A39D'}}>{l.campaign} · {new Date(l.receivedAt||l.importedAt).toLocaleString('de-AT')}</span>
+                        <span style={{fontSize:11,color:'#A8A39D'}}>Kampagne <code style={{background:'#F5F3F0',padding:'1px 6px',borderRadius:4,fontSize:11}}>{l.campaign}</code> · {new Date(l.receivedAt||l.importedAt).toLocaleString('de-AT')}</span>
                       </div>
                       <div style={{fontWeight:700,fontSize:15.5}}>{l.name||'(ohne Namen)'}</div>
                       <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:13,color:'#5A554F',marginTop:4}}>
@@ -7276,11 +7282,26 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
                         {l.phone&&<span>📞 {l.phone}</span>}
                         {l.company&&<span>🏢 {l.company}</span>}
                       </div>
+                      {/* Source — ALWAYS shown if present, important for tracking which form/page sent the lead */}
+                      {l.source&&l.source!==l.campaign&&(
+                        <div style={{marginTop:6,fontSize:12.5,color:'#5A554F'}}>
+                          <span style={{color:'#A8A39D'}}>Quelle:</span> <span style={{background:'#FEF3C7',padding:'2px 8px',borderRadius:6,fontWeight:600,fontSize:12}}>{l.source}</span>
+                        </div>
+                      )}
                       {l.message&&<div style={{marginTop:8,padding:'8px 10px',background:'#F5F3F0',borderRadius:8,fontSize:13,color:'#5A554F',whiteSpace:'pre-wrap'}}>{l.message}</div>}
-                      {Object.keys(l.extras||{}).length>0&&(
-                        <details style={{marginTop:8,fontSize:12,color:'#A8A39D'}}><summary style={{cursor:'pointer'}}>Zusatzfelder ({Object.keys(l.extras).length})</summary>
-                          <pre style={{marginTop:6,fontSize:11.5,whiteSpace:'pre-wrap',background:'#F5F3F0',padding:8,borderRadius:6}}>{JSON.stringify(l.extras,null,2)}</pre>
-                        </details>
+                      {/* Extras — show ALL non-empty fields directly visible (not hidden behind details) */}
+                      {extraEntries.length>0&&(
+                        <div style={{marginTop:10,padding:'10px 12px',background:'#FAFAF8',border:'1px solid rgba(0,0,0,.05)',borderRadius:8}}>
+                          <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:6}}>Zusatzfelder</div>
+                          <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:'4px 12px',fontSize:13}}>
+                            {extraEntries.map(([k,v])=>(
+                              <React.Fragment key={k}>
+                                <div style={{color:'#A8A39D',fontWeight:500,fontFamily:'ui-monospace,Menlo,monospace',fontSize:12.5}}>{k}:</div>
+                                <div style={{color:'#5A554F',wordBreak:'break-word'}}>{typeof v==='object'?JSON.stringify(v):String(v)}</div>
+                              </React.Fragment>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
                     <div style={{display:'flex',flexDirection:'column',gap:6}}>
@@ -7289,7 +7310,8 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -7914,30 +7936,56 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             sections={state.sections||[]}
             onUpdateLeads={leads=>upd({leads})}
             onConvertLead={(lead, sectionId)=>{
-              // Build a contact from the lead
+              // Auto-create customField definitions for any extras so they appear
+              // as structured (editable) fields in the contact, not just in notes.
+              const STD=['name','email','phone','company','message','source','metadata'];
+              const extraEntries=Object.entries(lead.extras||{}).filter(([k,v])=>!STD.includes(k)&&v!==null&&v!==undefined&&v!=='');
+              // Always also include source as a field (so it's queryable on the contact)
+              if (lead.source) extraEntries.unshift(['source', lead.source]);
+              const existingDefs=state.customFields||[];
+              const defByKey=Object.fromEntries(existingDefs.map(cf=>[cf.label.toLowerCase(),cf]));
+              const newDefs=[];
+              const customValues={};
+              for (const [k,v] of extraEntries) {
+                const labelLc=k.toLowerCase();
+                let def=defByKey[labelLc];
+                if (!def) {
+                  def={id:'cf_'+uid(),label:k,type:'text',sectionId:null};
+                  newDefs.push(def);
+                  defByKey[labelLc]=def;
+                }
+                customValues[def.id]=typeof v==='object'?JSON.stringify(v):String(v);
+              }
+              // Build a complete notes block as a human-readable audit trail too.
+              const notesLines=[
+                `📨 Lead aus Kampagne "${lead.campaign}"`,
+                `Empfangen: ${new Date(lead.receivedAt||lead.importedAt).toLocaleString('de-AT')}`,
+                lead.source?`Quelle: ${lead.source}`:'',
+                lead.message?`\nNachricht:\n${lead.message}`:'',
+                extraEntries.length?`\nZusatzfelder:\n${extraEntries.map(([k,v])=>`  • ${k}: ${typeof v==='object'?JSON.stringify(v):v}`).join('\n')}`:'',
+              ].filter(Boolean).join('\n');
               const newContact={
                 id:'c_'+uid(),
                 sectionId,
-                subsectionId:null,
                 firma:lead.company||lead.name||'',
                 ansprechpartner:lead.name||'',
                 email:lead.email||'',
                 telefon:lead.phone||'',
-                adresse:'',
-                website:'',
-                status:'',
-                umsatz:0,
-                notes:[lead.message?`📩 ${lead.message}`:'',`Lead aus Kampagne: ${lead.campaign}`,`Empfangen: ${new Date(lead.receivedAt||lead.importedAt).toLocaleString('de-AT')}`].filter(Boolean).join('\n\n'),
-                tags:lead.source?[lead.source]:[],
-                customFields:{},
-                activities:[{id:'a_'+uid(),timestamp:new Date().toISOString(),text:`Lead automatisch aus Kampagne "${lead.campaign}" übernommen.`}],
+                address:'', zip:'', city:'', country:'', taxId:'',
+                status:'Aktiv',
+                umsatz:'',
+                notizen:notesLines,
+                customValues,
+                reminders:[],
+                activities:[{id:'a_'+uid(),timestamp:new Date().toISOString(),text:`Lead automatisch aus Kampagne "${lead.campaign}" übernommen${lead.source?` (Quelle: ${lead.source})`:''}.`}],
                 createdAt:new Date().toISOString(),
               };
               upd({
                 contacts:[...state.contacts, newContact],
+                customFields:[...existingDefs, ...newDefs],
                 leads:(state.leads||[]).map(l=>l.id===lead.id?{...l,status:'converted',contactId:newContact.id}:l),
               });
-              alert(`Kontakt "${newContact.ansprechpartner||newContact.firma}" angelegt.`);
+              alert(`Kontakt "${newContact.ansprechpartner||newContact.firma}" angelegt${newDefs.length?` (${newDefs.length} neue Custom-Felder erstellt)`:''}.`);
             }}
           />
         </>) : activeId === INVOICES_VIEW ? (<>
