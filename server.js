@@ -837,40 +837,42 @@ app.get('/api/leads/docs', (_req, res) => {
 
 // POST /api/leads/:slug?key=SECRET — public webhook (ad networks call this)
 app.post('/api/leads/:slug', async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0, 45);
+  const ua = (req.headers['user-agent'] || '').toString().slice(0, 80);
+  const ct = (req.headers['content-type'] || '').toString();
+  const logFail = (code, msg) => console.warn(`✗ Lead REJECTED [${code}] slug='${req.params.slug}' from=${ip} UA="${ua}" CT="${ct}" reason="${msg}"`);
+  if (!DB_READY) { logFail(503,'DB not ready'); return res.status(503).json({ error: 'Database not ready' }); }
   const slug = (req.params.slug || '').toLowerCase();
-  if (!CAMPAIGN_SLUG_RE.test(slug)) return res.status(400).json({ error: 'invalid campaign slug' });
+  if (!CAMPAIGN_SLUG_RE.test(slug)) { logFail(400,'invalid slug format'); return res.status(400).json({ error: 'invalid campaign slug' }); }
   const key = (req.query.key || '').toString();
-  if (!key) return res.status(401).json({ error: 'missing webhook key (?key=...)' });
+  if (!key) { logFail(401,'missing key'); return res.status(401).json({ error: 'missing webhook key (?key=...)' }); }
   try {
     const [rows] = await pool.query('SELECT webhook_secret FROM crm_campaigns WHERE slug = ?', [slug]);
-    if (!rows.length) return res.status(404).json({ error: 'unknown campaign' });
-    // Constant-time compare
+    if (!rows.length) { logFail(404,'unknown campaign'); return res.status(404).json({ error: 'unknown campaign' }); }
     const a = Buffer.from(key, 'utf8');
     const b = Buffer.from(rows[0].webhook_secret, 'utf8');
     if (a.length !== b.length || !nodeCrypto.timingSafeEqual(a, b)) {
-      return res.status(401).json({ error: 'invalid webhook key' });
+      logFail(401, `wrong key (len got=${a.length} want=${b.length})`); return res.status(401).json({ error: 'invalid webhook key' });
     }
-    // Validate body
     const body = req.body || {};
     if (typeof body !== 'object' || Array.isArray(body)) {
-      return res.status(400).json({ error: 'body must be a JSON object' });
+      logFail(400, `body not JSON object (got ${Array.isArray(body)?'array':typeof body})`);
+      return res.status(400).json({ error: 'body must be a JSON object', hint: 'send Content-Type: application/json with a {} body' });
     }
     if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
-      return res.status(400).json({ error: 'field "name" is required' });
+      logFail(400, `name missing — body keys: [${Object.keys(body).join(',')}]`);
+      return res.status(400).json({ error: 'field "name" is required', receivedKeys: Object.keys(body) });
     }
     const payloadStr = JSON.stringify(body);
-    if (payloadStr.length > 32 * 1024) return res.status(413).json({ error: 'payload too large (max 32KB)' });
-    // Capture caller IP (works behind reverse proxy if Express trust-proxy is on, else gives socket IP)
-    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0, 45);
+    if (payloadStr.length > 32 * 1024) { logFail(413,'payload too large'); return res.status(413).json({ error: 'payload too large (max 32KB)' }); }
     const [result] = await pool.query(
       'INSERT INTO crm_lead_inbox (campaign_slug, payload, source_ip) VALUES (?, ?, ?)',
       [slug, payloadStr, ip]
     );
-    console.log(`✓ Lead received for campaign='${slug}' (id=${result.insertId}, from=${ip})`);
+    console.log(`✓ Lead received for campaign='${slug}' (id=${result.insertId}, from=${ip}, UA="${ua}")`);
     res.json({ ok: true, id: result.insertId });
   } catch (e) {
-    console.error('POST /api/leads/:slug:', e.message);
+    console.error(`✗ Lead 500 slug='${slug}' from=${ip}:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
