@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1A1815"/>
+      <stop offset="100%" stop-color="#0F0E0C"/>
+    </linearGradient>
+  </defs>
+  <rect width="200" height="200" fill="url(#bg)"/>
+  <text x="100" y="100"
+        font-family="'Plus Jakarta Sans','Segoe UI',system-ui,sans-serif"
+        font-size="115"
+        font-weight="800"
+        fill="#F3F0EB"
+        text-anchor="middle"
+        dominant-baseline="central"
+        letter-spacing="-4">W</text>
+</svg>
