@@ -823,8 +823,25 @@ app.post('/api/import', requireAuth, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════
 const CAMPAIGN_SLUG_RE = /^[a-z0-9_-]{2,64}$/;
 
+// CORS middleware — applied ONLY to public lead-webhook routes.
+// Browser-based forms on partner sites (e.g. everadam.com) trigger a
+// preflight OPTIONS for Content-Type: application/json, which fails
+// without these headers. We do NOT open CORS globally — auth-protected
+// endpoints stay same-origin so a hostile site can't ride a session.
+function publicLeadCors(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Max-Age', '86400'); // cache preflight 24h
+  res.header('Vary', 'Origin');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+}
+app.options('/api/leads/:slug', publicLeadCors);
+app.options('/api/leads/docs',   publicLeadCors);
+
 // GET /api/leads/docs — public documentation for ad partners
-app.get('/api/leads/docs', (_req, res) => {
+app.get('/api/leads/docs', publicLeadCors, (_req, res) => {
   res.json({
     description: 'Webhook endpoint for delivering leads from ad campaigns into the CRM.',
     endpoint: 'POST /api/leads/{campaign_slug}?key={webhook_secret}',
@@ -874,7 +891,7 @@ async function recordLeadAttempt({ slug, status, reason, ip, ua, ct, body }) {
 }
 
 // POST /api/leads/:slug?key=SECRET — public webhook (ad networks call this)
-app.post('/api/leads/:slug', async (req, res) => {
+app.post('/api/leads/:slug', publicLeadCors, async (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0, 45);
   const ua = (req.headers['user-agent'] || '').toString();
   const ct = (req.headers['content-type'] || '').toString();
@@ -937,7 +954,7 @@ app.delete('/api/leads/log', requireAuth, async (_req, res) => {
 });
 
 // Catch attempts where someone GETs the webhook URL (common mistake — log it)
-app.get('/api/leads/:slug', async (req, res) => {
+app.get('/api/leads/:slug', publicLeadCors, async (req, res) => {
   // Skip if it's a valid sub-route already handled
   if (req.params.slug === 'log' || req.params.slug === 'docs') return res.status(404).json({ error: 'not found' });
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0,45);
