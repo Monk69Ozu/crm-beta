@@ -1262,7 +1262,7 @@ const DEFAULT_ONBOARDING_FORM = {
   published: false,
 };
 
-const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[]};
+const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[],leads:[]};
 
 const lbl = {display:'block',fontSize:11,fontWeight:600,color:'#A8A39D',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'};
 
@@ -7133,6 +7133,270 @@ function ResponseViewerModal({response, form, onClose}){
   );
 }
 
+// ─── LEADS VIEW (Werbe-Webhook Inbox + Kampagnen-Verwaltung) ────────
+function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
+  const [serverCampaigns,setServerCampaigns]=useState(null); // null=loading
+  const [pendingLeads,setPendingLeads]=useState([]);
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState('');
+  const [showNew,setShowNew]=useState(false);
+  const [newSlug,setNewSlug]=useState('');
+  const [newLabel,setNewLabel]=useState('');
+  const [reveal,setReveal]=useState({}); // {slug: bool} — show secret in URL
+  const [tab,setTab]=useState('inbox'); // 'inbox' | 'campaigns' | 'archive'
+  const [convert,setConvert]=useState(null); // lead being converted
+
+  const auth={Authorization:`Bearer ${window.WEBARS_API_TOKEN}`};
+
+  const loadCampaigns=async()=>{
+    try{const r=await fetch('/api/campaigns',{headers:auth});if(r.ok){const j=await r.json();setServerCampaigns(j.campaigns||[]);}else setServerCampaigns([]);}
+    catch(e){setServerCampaigns([]);}
+  };
+
+  const pollInbox=async()=>{
+    try{
+      const r=await fetch('/api/leads',{headers:auth});
+      if(!r.ok)return;
+      const j=await r.json();
+      const fresh=j.leads||[];
+      setPendingLeads(fresh);
+      // Auto-import: pull each into encrypted state, then claim
+      if(fresh.length){
+        const known=new Set((leads||[]).map(l=>l.serverId));
+        const newOnes=fresh.filter(l=>!known.has(l.id));
+        if(newOnes.length){
+          const imported=newOnes.map(l=>{
+            const p=l.payload||{};
+            return {
+              id:'lead_'+(l.id)+'_'+Date.now().toString(36),
+              serverId:l.id,
+              campaign:l.campaign,
+              name:(p.name||'').toString(),
+              email:(p.email||'').toString(),
+              phone:(p.phone||'').toString(),
+              company:(p.company||'').toString(),
+              message:(p.message||'').toString(),
+              source:(p.source||l.campaign||'').toString(),
+              metadata:p.metadata&&typeof p.metadata==='object'?p.metadata:{},
+              extras:Object.fromEntries(Object.entries(p).filter(([k])=>!['name','email','phone','company','message','source','metadata'].includes(k))),
+              receivedAt:l.receivedAt,
+              sourceIp:l.sourceIp,
+              status:'new',
+              importedAt:new Date().toISOString(),
+            };
+          });
+          onUpdateLeads([...(leads||[]), ...imported]);
+          // Claim each on server (best effort)
+          for(const l of newOnes){
+            fetch(`/api/leads/${l.id}/claim`,{method:'POST',headers:auth}).catch(()=>{});
+          }
+        }
+      }
+    }catch(e){/* network blip — silent */}
+  };
+
+  useEffect(()=>{loadCampaigns();pollInbox();const t=setInterval(pollInbox,30000);return()=>clearInterval(t);},[]);
+
+  const createCampaign=async()=>{
+    if(!/^[a-z0-9_-]{2,64}$/.test(newSlug)){setErr('Slug: nur a-z, 0-9, _ oder - (2-64 Zeichen)');return;}
+    setBusy(true);setErr('');
+    try{
+      const r=await fetch('/api/campaigns',{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({slug:newSlug,label:newLabel})});
+      if(!r.ok){const j=await r.json().catch(()=>({}));setErr(j.error||'Fehler ('+r.status+')');setBusy(false);return;}
+      setNewSlug('');setNewLabel('');setShowNew(false);
+      await loadCampaigns();
+    }catch(e){setErr('Netzwerkfehler');}
+    setBusy(false);
+  };
+
+  const deleteCampaign=async(slug)=>{
+    if(!window.confirm(`Kampagne "${slug}" löschen?\nDamit erlischt auch der Webhook — laufende Werbeanzeigen können dann keine Leads mehr senden.`))return;
+    await fetch('/api/campaigns/'+encodeURIComponent(slug),{method:'DELETE',headers:auth});
+    await loadCampaigns();
+  };
+
+  const copyToClip=(t,note='Kopiert!')=>{
+    if(navigator.clipboard?.writeText)navigator.clipboard.writeText(t).then(()=>alert(note),()=>alert('Kopieren fehlgeschlagen.'));
+    else{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);alert(note);}
+  };
+
+  const newLeads=(leads||[]).filter(l=>l.status==='new');
+  const archivedLeads=(leads||[]).filter(l=>l.status!=='new');
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'24px 28px',background:'#F3F0EB'}}>
+      {/* Tabs */}
+      <div style={{display:'flex',gap:6,marginBottom:20}}>
+        {[{k:'inbox',l:'Posteingang',n:newLeads.length},{k:'campaigns',l:'Kampagnen',n:(serverCampaigns||[]).length},{k:'archive',l:'Archiv',n:archivedLeads.length}].map(t=>(
+          <button key={t.k} onClick={()=>setTab(t.k)} className="btn btn-sm" style={{background:tab===t.k?'#141210':'white',color:tab===t.k?'white':'#6B6560',border:tab===t.k?'none':'1px solid rgba(0,0,0,.08)'}}>
+            {t.l}{t.n>0?` · ${t.n}`:''}
+          </button>
+        ))}
+      </div>
+
+      {tab==='inbox'&&(
+        <div>
+          {newLeads.length===0?(
+            <div style={{background:'white',padding:'40px 24px',borderRadius:14,textAlign:'center',color:'#6B6560'}}>
+              <div style={{fontSize:34,marginBottom:8}}>📭</div>
+              <div style={{fontWeight:600,marginBottom:4}}>Keine neuen Leads</div>
+              <div style={{fontSize:13}}>Sobald deine Werbeanzeigen Daten an den Webhook senden, erscheinen sie hier.</div>
+            </div>
+          ):(
+            <div style={{display:'grid',gap:12}}>
+              {newLeads.map(l=>(
+                <div key={l.id} style={{background:'white',borderRadius:14,padding:'16px 18px',border:'1px solid rgba(0,0,0,.06)'}}>
+                  <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12,marginBottom:10}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                        <span style={{fontSize:10,fontWeight:700,color:'#22c55e',background:'rgba(34,197,94,.12)',borderRadius:99,padding:'2px 8px'}}>NEU</span>
+                        <span style={{fontSize:11,color:'#A8A39D'}}>{l.campaign} · {new Date(l.receivedAt||l.importedAt).toLocaleString('de-AT')}</span>
+                      </div>
+                      <div style={{fontWeight:700,fontSize:15.5}}>{l.name||'(ohne Namen)'}</div>
+                      <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:13,color:'#5A554F',marginTop:4}}>
+                        {l.email&&<span>📧 {l.email}</span>}
+                        {l.phone&&<span>📞 {l.phone}</span>}
+                        {l.company&&<span>🏢 {l.company}</span>}
+                      </div>
+                      {l.message&&<div style={{marginTop:8,padding:'8px 10px',background:'#F5F3F0',borderRadius:8,fontSize:13,color:'#5A554F',whiteSpace:'pre-wrap'}}>{l.message}</div>}
+                      {Object.keys(l.extras||{}).length>0&&(
+                        <details style={{marginTop:8,fontSize:12,color:'#A8A39D'}}><summary style={{cursor:'pointer'}}>Zusatzfelder ({Object.keys(l.extras).length})</summary>
+                          <pre style={{marginTop:6,fontSize:11.5,whiteSpace:'pre-wrap',background:'#F5F3F0',padding:8,borderRadius:6}}>{JSON.stringify(l.extras,null,2)}</pre>
+                        </details>
+                      )}
+                    </div>
+                    <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                      <button className="btn btn-primary btn-sm" onClick={()=>setConvert(l)}>→ Kontakt</button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>onUpdateLeads((leads||[]).map(x=>x.id===l.id?{...x,status:'dismissed'}:x))}>Verwerfen</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==='campaigns'&&(
+        <div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+            <div style={{fontSize:13,color:'#6B6560'}}>Erstelle eine Kampagne pro Werbekanal. Den Webhook-URL gibst du deinem Werbepartner.</div>
+            <button className="btn btn-primary btn-sm" onClick={()=>setShowNew(v=>!v)}><Icons.Plus/>Neue Kampagne</button>
+          </div>
+          {showNew&&(
+            <div style={{background:'white',padding:18,borderRadius:14,marginBottom:14,border:'1px solid rgba(0,0,0,.06)'}}>
+              <div style={{display:'grid',gap:10}}>
+                <div>
+                  <label style={{fontSize:12,color:'#6B6560',fontWeight:600}}>Slug (URL-Teil) — z.B. "facebook-mai-2026"</label>
+                  <input value={newSlug} onChange={e=>setNewSlug(e.target.value.toLowerCase())} placeholder="nur a-z, 0-9, _ oder -" style={{width:'100%',marginTop:4}} autoFocus/>
+                </div>
+                <div>
+                  <label style={{fontSize:12,color:'#6B6560',fontWeight:600}}>Label (für deine Übersicht)</label>
+                  <input value={newLabel} onChange={e=>setNewLabel(e.target.value)} placeholder="z.B. Facebook Ads — Mai 2026" style={{width:'100%',marginTop:4}}/>
+                </div>
+                {err&&<div style={{fontSize:12,color:'#dc2626'}}>{err}</div>}
+                <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>{setShowNew(false);setErr('');}}>Abbrechen</button>
+                  <button className="btn btn-primary btn-sm" onClick={createCampaign} disabled={busy||!newSlug}>Erstellen</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {serverCampaigns===null?(
+            <div style={{textAlign:'center',padding:40,color:'#A8A39D'}}>Lade…</div>
+          ):serverCampaigns.length===0?(
+            <div style={{background:'white',padding:'40px 24px',borderRadius:14,textAlign:'center',color:'#6B6560'}}>
+              <div style={{fontSize:34,marginBottom:8}}>🎯</div>
+              <div style={{fontWeight:600,marginBottom:4}}>Noch keine Kampagne</div>
+              <div style={{fontSize:13}}>Lege eine Kampagne an um den Webhook-URL zu bekommen.</div>
+            </div>
+          ):(
+            <div style={{display:'grid',gap:12}}>
+              {serverCampaigns.map(c=>(
+                <div key={c.slug} style={{background:'white',padding:'16px 18px',borderRadius:14,border:'1px solid rgba(0,0,0,.06)'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:10}}>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:15}}>{c.label||c.slug}</div>
+                      <div style={{fontSize:12,color:'#A8A39D'}}>Slug: <code>{c.slug}</code> · seit {new Date(c.createdAt).toLocaleDateString('de-AT')}</div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>deleteCampaign(c.slug)} style={{color:'#dc2626'}}>Löschen</button>
+                  </div>
+                  <div style={{background:'#F5F3F0',padding:'10px 12px',borderRadius:8,fontSize:12,wordBreak:'break-all',fontFamily:'ui-monospace,Menlo,monospace'}}>
+                    {reveal[c.slug]?c.webhookUrl:c.webhookUrl.replace(/key=[^&]+/,'key=••••••••••••••••••••')}
+                  </div>
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>setReveal(r=>({...r,[c.slug]:!r[c.slug]}))}>{reveal[c.slug]?'Verbergen':'Anzeigen'}</button>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>copyToClip(c.webhookUrl,'Webhook-URL kopiert!')}>URL kopieren</button>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>copyToClip(c.webhookSecret,'Secret kopiert!')}>Nur Secret kopieren</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* API Docs */}
+          <div style={{marginTop:24,background:'white',padding:18,borderRadius:14,border:'1px solid rgba(0,0,0,.06)'}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>📘 Für deinen Werbepartner</div>
+            <div style={{fontSize:13,color:'#5A554F',lineHeight:1.6}}>
+              <p style={{margin:'4px 0'}}>Der Partner sendet ein <strong>HTTP POST</strong> an die Webhook-URL mit JSON-Body:</p>
+              <pre style={{background:'#F5F3F0',padding:12,borderRadius:8,fontSize:12,overflow:'auto'}}>{`{
+  "name":    "Max Mustermann",   // PFLICHT
+  "email":   "max@example.at",
+  "phone":   "+43 660 1234567",
+  "company": "Mustermann GmbH",
+  "message": "Interesse an Webentwicklung",
+  "source":  "facebook-leadform"  // optional
+}`}</pre>
+              <p style={{margin:'8px 0 4px'}}>Beliebige Zusatzfelder werden auch gespeichert.</p>
+              <p style={{margin:'4px 0'}}>Antworten: <code>200 {`{ok:true, id:N}`}</code> · <code>401</code> falsches Secret · <code>404</code> unbekannte Kampagne · <code>413</code> &gt;32KB.</p>
+              <p style={{margin:'8px 0 0'}}>Volle Doku als JSON: <a href="/api/leads/docs" target="_blank" style={{color:'#0F0E0C'}}>GET /api/leads/docs</a></p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab==='archive'&&(
+        <div>
+          {archivedLeads.length===0?(
+            <div style={{background:'white',padding:'40px 24px',borderRadius:14,textAlign:'center',color:'#6B6560'}}>Noch keine archivierten Leads.</div>
+          ):(
+            <div style={{display:'grid',gap:8}}>
+              {archivedLeads.slice().reverse().map(l=>(
+                <div key={l.id} style={{background:'white',padding:'12px 14px',borderRadius:10,border:'1px solid rgba(0,0,0,.06)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:14}}>{l.name||'(ohne Namen)'}</div>
+                    <div style={{fontSize:12,color:'#A8A39D'}}>{l.campaign} · {l.status==='converted'?'→ als Kontakt übernommen':'verworfen'} · {new Date(l.importedAt).toLocaleDateString('de-AT')}</div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Lead endgültig löschen?'))onUpdateLeads((leads||[]).filter(x=>x.id!==l.id));}}>Löschen</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Convert lead → contact modal */}
+      {convert&&(
+        <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setConvert(null)}>
+          <div className="modal-box" style={{width:460}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+              <div style={{fontWeight:700,fontSize:16}}>Lead → Kontakt</div>
+              <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>setConvert(null)}>✕</button>
+            </div>
+            <div style={{fontSize:13,color:'#6B6560',marginBottom:14}}>In welchen Bereich soll <strong>{convert.name||'(ohne Namen)'}</strong> übernommen werden?</div>
+            <div style={{display:'grid',gap:8}}>
+              {(sections||[]).map(s=>(
+                <button key={s.id} className="btn btn-ghost" style={{justifyContent:'flex-start',padding:'12px 14px'}} onClick={()=>{onConvertLead(convert,s.id);setConvert(null);}}>
+                  <span style={{marginRight:10}}>{s.icon}</span>{s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const [state,setState]=useState(()=>({
     ...initialData,
@@ -7152,6 +7416,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     forms: initialData.forms && initialData.forms.length ? initialData.forms : [DEFAULT_ONBOARDING_FORM],
     formResponses: initialData.formResponses || [],
     campaigns: initialData.campaigns || [],
+    leads: initialData.leads || [],
   }));
   const TODOS_VIEW = '__todos__';
   const AI_VIEW = '__ai__';
@@ -7161,6 +7426,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const TOKENS_VIEW = '__tokens__';
   const FORMS_VIEW = '__forms__';
   const CAMPAIGNS_VIEW = '__campaigns__';
+  const LEADS_VIEW = '__leads__';
   const [activeId,setActiveId]=useState((initialData.sections||DEFAULT_SECTIONS)[0]?.id);
   const [activeSubId,setActiveSubId]=useState(null);
   const [search,setSearch]=useState('');
@@ -7240,7 +7506,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     const fresh=await ghCheckForUpdates(cryptoKey);
     if(fresh){
       skipNextSaveRef.current=true;
-      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[]}));
+      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[], leads:fresh.leads||[]}));
       return true;
     }
     return false;
@@ -7384,6 +7650,17 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Rechnungen</span>
               {overdue>0&&<span style={{fontSize:10,fontWeight:700,color:'#ef4444',background:'rgba(239,68,68,0.15)',borderRadius:99,padding:'1px 6px'}}>{overdue}</span>}
               {count>0&&!overdue&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
+            </button>
+          );})()}
+          {/* Leads (Werbe-Webhooks) */}
+          {(()=>{const isActive=activeId===LEADS_VIEW;const newCount=(state.leads||[]).filter(l=>l.status==='new').length;const total=(state.leads||[]).length;return(
+            <button onClick={()=>setActiveId(LEADS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>🎯</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Leads</span>
+              {newCount>0&&<span style={{fontSize:10,fontWeight:700,color:'#22c55e',background:'rgba(34,197,94,.15)',borderRadius:99,padding:'1px 6px'}}>{newCount}</span>}
+              {total>0&&!newCount&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{total}</span>}
             </button>
           );})()}
           {/* Formulare */}
@@ -7555,6 +7832,44 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             campaigns={state.campaigns||[]}
             onUpdate={campaigns=>upd({campaigns})}
           />
+        </>) : activeId === LEADS_VIEW ? (<>
+          <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+            <div style={{flex:1}}>
+              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>🎯 Leads</h1>
+              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>{(state.leads||[]).filter(l=>l.status==='new').length} neue · {(state.leads||[]).filter(l=>l.status==='converted').length} übernommen · {(state.leads||[]).filter(l=>l.status==='dismissed').length} verworfen</div>
+            </div>
+          </div>
+          <LeadsView
+            leads={state.leads||[]}
+            sections={state.sections||[]}
+            onUpdateLeads={leads=>upd({leads})}
+            onConvertLead={(lead, sectionId)=>{
+              // Build a contact from the lead
+              const newContact={
+                id:'c_'+uid(),
+                sectionId,
+                subsectionId:null,
+                firma:lead.company||lead.name||'',
+                ansprechpartner:lead.name||'',
+                email:lead.email||'',
+                telefon:lead.phone||'',
+                adresse:'',
+                website:'',
+                status:'',
+                umsatz:0,
+                notes:[lead.message?`📩 ${lead.message}`:'',`Lead aus Kampagne: ${lead.campaign}`,`Empfangen: ${new Date(lead.receivedAt||lead.importedAt).toLocaleString('de-AT')}`].filter(Boolean).join('\n\n'),
+                tags:lead.source?[lead.source]:[],
+                customFields:{},
+                activities:[{id:'a_'+uid(),timestamp:new Date().toISOString(),text:`Lead automatisch aus Kampagne "${lead.campaign}" übernommen.`}],
+                createdAt:new Date().toISOString(),
+              };
+              upd({
+                contacts:[...state.contacts, newContact],
+                leads:(state.leads||[]).map(l=>l.id===lead.id?{...l,status:'converted',contactId:newContact.id}:l),
+              });
+              alert(`Kontakt "${newContact.ansprechpartner||newContact.firma}" angelegt.`);
+            }}
+          />
         </>) : activeId === INVOICES_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
             <div style={{flex:1}}>
@@ -7650,7 +7965,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
         if (existingData) {
           // Loaded from GitHub — overwrite local state
           skipNextSaveRef.current=true;
-          setState({...existingData, sections:existingData.sections||DEFAULT_SECTIONS, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, customFields:existingData.customFields||[], members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, tokens:existingData.tokens||[], forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[], campaigns:existingData.campaigns||[]});
+          setState({...existingData, sections:existingData.sections||DEFAULT_SECTIONS, subsections:existingData.subsections||DEFAULT_SUBSECTIONS, customFields:existingData.customFields||[], members:existingData.members||[], todos:existingData.todos||[], aiEmployees:existingData.aiEmployees||[], claudeAccounts:existingData.claudeAccounts||[], claudeTasks:existingData.claudeTasks||[], quotes:existingData.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(existingData.quoteSettings||{})}, invoices:existingData.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(existingData.invoiceSettings||{})}, tokens:existingData.tokens||[], forms:existingData.forms&&existingData.forms.length?existingData.forms:[DEFAULT_ONBOARDING_FORM], formResponses:existingData.formResponses||[], campaigns:existingData.campaigns||[], leads:existingData.leads||[]});
         } else {
           // No remote yet — push current local state
           await saveEncrypted(cryptoKey, state);
@@ -7672,7 +7987,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
     {modal==='changePassword'&&<ChangePasswordModal cryptoKey={cryptoKey} onClose={()=>setModal(null)}/>}
-    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[]}));}} onClose={()=>setModal(null)}/>}
+    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[],leads:data.leads||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
       quote={editingQuote}

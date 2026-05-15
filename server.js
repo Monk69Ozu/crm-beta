@@ -186,6 +186,31 @@ async function initDb() {
         PRIMARY KEY (id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // ── CAMPAIGN + LEAD INBOX (webhook receiver for ad networks) ───
+    // Leads come in plaintext (ad networks can't encrypt with master key).
+    // Server is short-term inbox: client polls, moves into encrypted state, deletes.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_campaigns (
+        slug            VARCHAR(64)  NOT NULL,
+        webhook_secret  VARCHAR(64)  NOT NULL,
+        label           VARCHAR(128) NOT NULL DEFAULT '',
+        created_at      DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (slug)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_lead_inbox (
+        id              INT          NOT NULL AUTO_INCREMENT,
+        campaign_slug   VARCHAR(64)  NOT NULL,
+        payload         LONGTEXT     NOT NULL,
+        source_ip       VARCHAR(45)  DEFAULT NULL,
+        received_at     DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        claimed_at      DATETIME     DEFAULT NULL,
+        PRIMARY KEY (id),
+        INDEX idx_unclaimed (claimed_at, received_at),
+        INDEX idx_campaign (campaign_slug)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // ── BACKUP HARDENING ───────────────────────────────────────────
     // Add tier column so we can keep different retention windows.
     // Existing rows get tier='legacy' (kept indefinitely — safe).
@@ -770,6 +795,198 @@ app.post('/api/import', requireAuth, async (req, res) => {
   } finally {
     conn.release();
   }
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  CAMPAIGNS + LEAD WEBHOOK
+//  ────────────────────────
+//  Public webhook for ad networks. Validated by per-campaign secret.
+//  Leads are stored plaintext (briefly) until the CRM client polls,
+//  encrypts them into its state, and deletes from the inbox.
+// ══════════════════════════════════════════════════════════════════
+const CAMPAIGN_SLUG_RE = /^[a-z0-9_-]{2,64}$/;
+
+// GET /api/leads/docs — public documentation for ad partners
+app.get('/api/leads/docs', (_req, res) => {
+  res.json({
+    description: 'Webhook endpoint for delivering leads from ad campaigns into the CRM.',
+    endpoint: 'POST /api/leads/{campaign_slug}?key={webhook_secret}',
+    contentType: 'application/json',
+    expectedFields: {
+      name:    { type: 'string', required: true,  example: 'Max Mustermann' },
+      email:   { type: 'string', required: false, example: 'max@example.at' },
+      phone:   { type: 'string', required: false, example: '+43 660 1234567' },
+      company: { type: 'string', required: false, example: 'Mustermann GmbH' },
+      message: { type: 'string', required: false, example: 'Interesse an Webentwicklung' },
+      source:  { type: 'string', required: false, note: 'Defaults to campaign_slug if missing' },
+      metadata:{ type: 'object', required: false, note: 'Any additional ad-network fields are preserved' },
+    },
+    extraFieldsAllowed: true,
+    extraFieldsNote: 'Any field beyond the listed ones is stored verbatim in metadata and shown in the CRM.',
+    maxPayloadBytes: 32 * 1024,
+    rateLimit: 'no formal limit — but the inbox is purged regularly',
+    responses: {
+      '200': '{ "ok": true, "id": <inbox_id> }',
+      '400': 'invalid JSON / missing name / payload too large',
+      '401': 'invalid or missing webhook key',
+      '404': 'unknown campaign slug',
+    },
+    exampleCurl: `curl -X POST 'https://crm.webars.at/api/leads/CAMPAIGN_SLUG?key=YOUR_SECRET' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name":"Max Mustermann","email":"max@example.at","phone":"+43 660 1234567","message":"Interesse"}'`
+  });
+});
+
+// POST /api/leads/:slug?key=SECRET — public webhook (ad networks call this)
+app.post('/api/leads/:slug', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const slug = (req.params.slug || '').toLowerCase();
+  if (!CAMPAIGN_SLUG_RE.test(slug)) return res.status(400).json({ error: 'invalid campaign slug' });
+  const key = (req.query.key || '').toString();
+  if (!key) return res.status(401).json({ error: 'missing webhook key (?key=...)' });
+  try {
+    const [rows] = await pool.query('SELECT webhook_secret FROM crm_campaigns WHERE slug = ?', [slug]);
+    if (!rows.length) return res.status(404).json({ error: 'unknown campaign' });
+    // Constant-time compare
+    const a = Buffer.from(key, 'utf8');
+    const b = Buffer.from(rows[0].webhook_secret, 'utf8');
+    if (a.length !== b.length || !nodeCrypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'invalid webhook key' });
+    }
+    // Validate body
+    const body = req.body || {};
+    if (typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'body must be a JSON object' });
+    }
+    if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
+      return res.status(400).json({ error: 'field "name" is required' });
+    }
+    const payloadStr = JSON.stringify(body);
+    if (payloadStr.length > 32 * 1024) return res.status(413).json({ error: 'payload too large (max 32KB)' });
+    // Capture caller IP (works behind reverse proxy if Express trust-proxy is on, else gives socket IP)
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0, 45);
+    const [result] = await pool.query(
+      'INSERT INTO crm_lead_inbox (campaign_slug, payload, source_ip) VALUES (?, ?, ?)',
+      [slug, payloadStr, ip]
+    );
+    console.log(`✓ Lead received for campaign='${slug}' (id=${result.insertId}, from=${ip})`);
+    res.json({ ok: true, id: result.insertId });
+  } catch (e) {
+    console.error('POST /api/leads/:slug:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/leads — list inbox (auth) — for the CRM client to poll
+//   ?claimed=0 (default) returns only unclaimed
+//   ?claimed=all returns everything
+//   ?since=ID  returns only id > ID
+app.get('/api/leads', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const claimedFilter = req.query.claimed === 'all' ? '' : 'AND claimed_at IS NULL';
+    const since = parseInt(req.query.since, 10);
+    const params = [];
+    let sinceClause = '';
+    if (Number.isInteger(since) && since > 0) { sinceClause = 'AND id > ?'; params.push(since); }
+    const [rows] = await pool.query(
+      `SELECT id, campaign_slug, payload, source_ip, received_at, claimed_at
+         FROM crm_lead_inbox
+         WHERE 1=1 ${claimedFilter} ${sinceClause}
+         ORDER BY id ASC LIMIT 500`,
+      params
+    );
+    const leads = rows.map(r => ({
+      id: r.id,
+      campaign: r.campaign_slug,
+      payload: (() => { try { return JSON.parse(r.payload); } catch { return r.payload; } })(),
+      sourceIp: r.source_ip,
+      receivedAt: r.received_at,
+      claimedAt: r.claimed_at,
+    }));
+    res.json({ leads, count: leads.length });
+  } catch (e) {
+    console.error('GET /api/leads:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/leads/:id/claim — mark a lead as claimed (CRM picked it up)
+app.post('/api/leads/:id/claim', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const [r] = await pool.query('UPDATE crm_lead_inbox SET claimed_at = NOW() WHERE id = ? AND claimed_at IS NULL', [id]);
+    if (!r.affectedRows) return res.status(404).json({ error: 'not found or already claimed' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/leads/:id — explicitly delete a lead from the inbox
+app.delete('/api/leads/:id', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+  try {
+    await pool.query('DELETE FROM crm_lead_inbox WHERE id = ?', [id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Campaign management ──────────────────────────────────────────
+// POST /api/campaigns  body: {slug, label?}  → server generates webhook_secret
+app.post('/api/campaigns', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const slug = ((req.body && req.body.slug) || '').toLowerCase();
+  const label = (req.body && req.body.label || '').toString().slice(0, 128);
+  if (!CAMPAIGN_SLUG_RE.test(slug)) return res.status(400).json({ error: 'slug must match [a-z0-9_-]{2,64}' });
+  try {
+    const [exists] = await pool.query('SELECT slug FROM crm_campaigns WHERE slug = ?', [slug]);
+    if (exists.length) return res.status(409).json({ error: 'campaign already exists' });
+    const secret = nodeCrypto.randomBytes(24).toString('base64url'); // 32 url-safe chars
+    await pool.query(
+      'INSERT INTO crm_campaigns (slug, webhook_secret, label) VALUES (?, ?, ?)',
+      [slug, secret, label]
+    );
+    const host = (req.headers.host || 'crm.webars.at');
+    const proto = (req.headers['x-forwarded-proto'] || 'https');
+    const webhookUrl = `${proto}://${host}/api/leads/${slug}?key=${secret}`;
+    console.log(`✓ Campaign created: ${slug}`);
+    res.json({ slug, label, webhookSecret: secret, webhookUrl });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/campaigns — list campaigns + their webhook URLs
+app.get('/api/campaigns', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [rows] = await pool.query('SELECT slug, label, webhook_secret, created_at FROM crm_campaigns ORDER BY created_at DESC');
+    const host = (req.headers.host || 'crm.webars.at');
+    const proto = (req.headers['x-forwarded-proto'] || 'https');
+    const campaigns = rows.map(c => ({
+      slug: c.slug,
+      label: c.label,
+      webhookSecret: c.webhook_secret,
+      webhookUrl: `${proto}://${host}/api/leads/${c.slug}?key=${c.webhook_secret}`,
+      createdAt: c.created_at,
+    }));
+    res.json({ campaigns });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/campaigns/:slug — remove campaign + its inbox
+app.delete('/api/campaigns/:slug', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const slug = (req.params.slug || '').toLowerCase();
+  if (!CAMPAIGN_SLUG_RE.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query('DELETE FROM crm_lead_inbox WHERE campaign_slug = ?', [slug]);
+    await conn.query('DELETE FROM crm_campaigns WHERE slug = ?', [slug]);
+    await conn.commit();
+    res.json({ ok: true });
+  } catch (e) { await conn.rollback(); res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
 });
 
 // ── Admin: Full Reset ──────────────────────────────────────────────
