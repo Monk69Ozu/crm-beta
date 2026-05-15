@@ -15,8 +15,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY server.js    ./
 COPY index.html   ./
-COPY logo.svg     ./
-COPY favicon.svg  ./
+COPY logo.png     ./
 
 # Optional: jarvis tools (not needed at runtime, but nice to have)
 COPY jarvis_crm_tools.js ./
