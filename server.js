@@ -211,6 +211,23 @@ async function initDb() {
         INDEX idx_campaign (campaign_slug)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // Webhook attempt log — every call (success + failure) for debugging.
+    // Capped to last 500 entries (auto-pruned).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_lead_log (
+        id              INT          NOT NULL AUTO_INCREMENT,
+        ts              DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        slug            VARCHAR(128) DEFAULT NULL,
+        status          SMALLINT     NOT NULL,
+        reason          VARCHAR(255) DEFAULT NULL,
+        source_ip       VARCHAR(45)  DEFAULT NULL,
+        user_agent      VARCHAR(255) DEFAULT NULL,
+        content_type    VARCHAR(128) DEFAULT NULL,
+        body_preview    TEXT         DEFAULT NULL,
+        PRIMARY KEY (id),
+        INDEX idx_ts (ts)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // ── BACKUP HARDENING ───────────────────────────────────────────
     // Add tier column so we can keep different retention windows.
     // Existing rows get tier='legacy' (kept indefinitely — safe).
@@ -835,46 +852,98 @@ app.get('/api/leads/docs', (_req, res) => {
   });
 });
 
+// Helper: record every webhook attempt to crm_lead_log + console
+async function recordLeadAttempt({ slug, status, reason, ip, ua, ct, body }) {
+  try {
+    let preview = null;
+    if (body !== undefined && body !== null) {
+      try { preview = (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 1024); }
+      catch { preview = '(unserializable)'; }
+    }
+    await pool.query(
+      'INSERT INTO crm_lead_log (slug, status, reason, source_ip, user_agent, content_type, body_preview) VALUES (?,?,?,?,?,?,?)',
+      [slug || null, status, (reason || '').slice(0,255), ip || null, (ua || '').slice(0,255), (ct || '').slice(0,128), preview]
+    );
+    // Cap log at last 500 entries
+    await pool.query(`
+      DELETE FROM crm_lead_log WHERE id NOT IN (
+        SELECT id FROM (SELECT id FROM crm_lead_log ORDER BY id DESC LIMIT 500) t
+      )
+    `);
+  } catch (e) { /* logging must never break the main flow */ }
+}
+
 // POST /api/leads/:slug?key=SECRET — public webhook (ad networks call this)
 app.post('/api/leads/:slug', async (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0, 45);
-  const ua = (req.headers['user-agent'] || '').toString().slice(0, 80);
+  const ua = (req.headers['user-agent'] || '').toString();
   const ct = (req.headers['content-type'] || '').toString();
-  const logFail = (code, msg) => console.warn(`✗ Lead REJECTED [${code}] slug='${req.params.slug}' from=${ip} UA="${ua}" CT="${ct}" reason="${msg}"`);
-  if (!DB_READY) { logFail(503,'DB not ready'); return res.status(503).json({ error: 'Database not ready' }); }
   const slug = (req.params.slug || '').toLowerCase();
-  if (!CAMPAIGN_SLUG_RE.test(slug)) { logFail(400,'invalid slug format'); return res.status(400).json({ error: 'invalid campaign slug' }); }
+  const finish = async (status, reason, payload) => {
+    if (status >= 400) console.warn(`✗ Lead REJECTED [${status}] slug='${slug}' from=${ip} UA="${ua.slice(0,80)}" CT="${ct}" reason="${reason}"`);
+    else console.log(`✓ Lead received for campaign='${slug}' (id=${payload?.id}, from=${ip})`);
+    await recordLeadAttempt({ slug, status, reason, ip, ua, ct, body: req.body });
+    return res.status(status).json(payload);
+  };
+  if (!DB_READY) return finish(503, 'DB not ready', { error: 'Database not ready' });
+  if (!CAMPAIGN_SLUG_RE.test(slug)) return finish(400, 'invalid slug format', { error: 'invalid campaign slug' });
   const key = (req.query.key || '').toString();
-  if (!key) { logFail(401,'missing key'); return res.status(401).json({ error: 'missing webhook key (?key=...)' }); }
+  if (!key) return finish(401, 'missing key (?key=... fehlt in URL)', { error: 'missing webhook key (?key=...)' });
   try {
     const [rows] = await pool.query('SELECT webhook_secret FROM crm_campaigns WHERE slug = ?', [slug]);
-    if (!rows.length) { logFail(404,'unknown campaign'); return res.status(404).json({ error: 'unknown campaign' }); }
+    if (!rows.length) return finish(404, 'unknown campaign (Slug nicht angelegt)', { error: 'unknown campaign' });
     const a = Buffer.from(key, 'utf8');
     const b = Buffer.from(rows[0].webhook_secret, 'utf8');
     if (a.length !== b.length || !nodeCrypto.timingSafeEqual(a, b)) {
-      logFail(401, `wrong key (len got=${a.length} want=${b.length})`); return res.status(401).json({ error: 'invalid webhook key' });
+      return finish(401, `wrong key (len got=${a.length} want=${b.length})`, { error: 'invalid webhook key' });
     }
     const body = req.body || {};
     if (typeof body !== 'object' || Array.isArray(body)) {
-      logFail(400, `body not JSON object (got ${Array.isArray(body)?'array':typeof body})`);
-      return res.status(400).json({ error: 'body must be a JSON object', hint: 'send Content-Type: application/json with a {} body' });
+      return finish(400, `body not JSON object (got ${Array.isArray(body)?'array':typeof body})`, { error: 'body must be a JSON object', hint: 'send Content-Type: application/json with a {} body' });
     }
     if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
-      logFail(400, `name missing — body keys: [${Object.keys(body).join(',')}]`);
-      return res.status(400).json({ error: 'field "name" is required', receivedKeys: Object.keys(body) });
+      return finish(400, `name missing — body keys: [${Object.keys(body).join(',')||'(empty)'}]`, { error: 'field "name" is required', receivedKeys: Object.keys(body) });
     }
     const payloadStr = JSON.stringify(body);
-    if (payloadStr.length > 32 * 1024) { logFail(413,'payload too large'); return res.status(413).json({ error: 'payload too large (max 32KB)' }); }
+    if (payloadStr.length > 32 * 1024) return finish(413, 'payload too large (>32KB)', { error: 'payload too large (max 32KB)' });
     const [result] = await pool.query(
       'INSERT INTO crm_lead_inbox (campaign_slug, payload, source_ip) VALUES (?, ?, ?)',
       [slug, payloadStr, ip]
     );
-    console.log(`✓ Lead received for campaign='${slug}' (id=${result.insertId}, from=${ip}, UA="${ua}")`);
-    res.json({ ok: true, id: result.insertId });
+    return finish(200, 'ok', { ok: true, id: result.insertId });
   } catch (e) {
-    console.error(`✗ Lead 500 slug='${slug}' from=${ip}:`, e.message);
-    res.status(500).json({ error: e.message });
+    return finish(500, 'server error: '+e.message, { error: e.message });
   }
+});
+
+// GET /api/leads/log — fetch recent webhook attempts (auth)
+app.get('/api/leads/log', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, ts, slug, status, reason, source_ip, user_agent, content_type, body_preview FROM crm_lead_log ORDER BY id DESC LIMIT ?',
+      [limit]
+    );
+    res.json({ entries: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/leads/log — clear the log (auth)
+app.delete('/api/leads/log', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try { await pool.query('TRUNCATE crm_lead_log'); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Catch attempts where someone GETs the webhook URL (common mistake — log it)
+app.get('/api/leads/:slug', async (req, res) => {
+  // Skip if it's a valid sub-route already handled
+  if (req.params.slug === 'log' || req.params.slug === 'docs') return res.status(404).json({ error: 'not found' });
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim().slice(0,45);
+  const ua = (req.headers['user-agent'] || '').toString();
+  await recordLeadAttempt({ slug: req.params.slug, status: 405, reason: 'wrong method (GET) — webhook needs POST with JSON body', ip, ua, ct: req.headers['content-type'] || '', body: null });
+  res.status(405).json({ error: 'wrong method', hint: 'use POST with Content-Type: application/json' });
 });
 
 // GET /api/leads — list inbox (auth) — for the CRM client to poll
