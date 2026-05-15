@@ -1,17 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1A1815"/>
-      <stop offset="100%" stop-color="#0F0E0C"/>
-    </linearGradient>
-  </defs>
-  <rect width="200" height="200" fill="url(#bg)"/>
-  <text x="100" y="100"
-        font-family="'Plus Jakarta Sans','Segoe UI',system-ui,sans-serif"
-        font-size="115"
-        font-weight="800"
-        fill="#F3F0EB"
-        text-anchor="middle"
-        dominant-baseline="central"
-        letter-spacing="-4">W</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
+  <!-- White circular background with subtle border -->
+  <circle cx="120" cy="120" r="116" fill="#FFFFFF" stroke="#E8E4DF" stroke-width="2"/>
+
+  <!-- Wings (three horizontal swept lines) -->
+  <g fill="#0F0E0C">
+    <!-- Top wing — longest -->
+    <path d="M 38 96 Q 78 88 122 96 L 122 110 Q 78 102 38 110 Z"/>
+    <!-- Middle wing -->
+    <path d="M 50 116 Q 86 110 122 116 L 122 130 Q 86 124 50 130 Z"/>
+    <!-- Bottom wing — shortest -->
+    <path d="M 64 136 Q 92 132 122 136 L 122 150 Q 92 146 64 150 Z"/>
+  </g>
+
+  <!-- The 'b' letter: vertical stem + circular bowl -->
+  <g fill="#0F0E0C">
+    <!-- Vertical stem -->
+    <rect x="118" y="52" width="20" height="142" rx="2"/>
+    <!-- Bowl: outer circle + inner cutout -->
+    <circle cx="156" cy="156" r="42"/>
+    <circle cx="156" cy="156" r="22" fill="#FFFFFF"/>
+    <!-- Connect stem to bowl smoothly -->
+    <rect x="118" y="148" width="38" height="16"/>
+  </g>
 </svg>
