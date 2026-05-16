@@ -1141,7 +1141,7 @@ function makeOTPAuthURL(secret, email='WebArs CRM') {
 </script>
 
 <script type="text/babel">
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
 // ── HELPERS ─────────────────────────────────────────────────────
 const uid     = () => Math.random().toString(36).slice(2,10);
@@ -5888,6 +5888,14 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
 
   useEffect(()=>{setBlocks(parseBlocks(file.content));setFileName(file.name);setEditingName(false);},[file.id]);
 
+  // Resize ALL textareas once when the file (or blocks added/removed) changes.
+  // Crucially: NOT on every render — that's what caused the scroll-jump while typing.
+  useLayoutEffect(()=>{
+    Object.values(blockRefs.current).forEach(el=>{
+      if(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
+    });
+  },[file.id, blocks.length]);
+
   const persist=useCallback(bl=>{clearTimeout(timerRef.current);timerRef.current=setTimeout(()=>onSaveContent(JSON.stringify(bl)),600);},[onSaveContent]);
   const setB=bl=>{setBlocks(bl);persist(bl);};
   const updB=(id,p)=>setB(blocks.map(b=>b.id===id?{...b,...p}:b));
@@ -5999,7 +6007,7 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
                 {block.type==='bullet'&&<span style={{color:accent,fontSize:18,lineHeight:1.5,flexShrink:0,marginTop:1,userSelect:'none'}}>•</span>}
                 {block.type==='numbered'&&<span style={{color:accent,fontSize:15,lineHeight:1.85,flexShrink:0,minWidth:22,textAlign:'right',userSelect:'none'}}>{numIdx}.</span>}
                 <textarea
-                  ref={el=>{if(el){blockRefs.current[block.id]=el;el.style.height='auto';el.style.height=el.scrollHeight+'px';}}}
+                  ref={el=>{if(el)blockRefs.current[block.id]=el;}}
                   value={block.content||''}
                   onChange={e=>handleChange(block.id,e.target.value)}
                   onKeyDown={e=>handleKey(e,block)}
