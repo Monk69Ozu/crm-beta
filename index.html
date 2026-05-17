@@ -6966,6 +6966,40 @@ function PublicFormPage({slug}){
   const [errors,setErrors]=useState({});
 
   useEffect(()=>{
+    if(!document.getElementById('inter-font')){
+      const l=document.createElement('link');
+      l.id='inter-font';
+      l.rel='stylesheet';
+      l.href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap';
+      document.head.appendChild(l);
+    }
+  },[]);
+
+  const FF="'Inter',system-ui,sans-serif";
+  const NAVY='#1B2A3B';
+  const BG='#F3F0EB';
+  const CARD={background:'#fff',borderRadius:14,padding:'20px 22px',border:'1px solid rgba(0,0,0,.06)',boxShadow:'0 1px 8px rgba(0,0,0,.05)'};
+  const INPUT_BASE={width:'100%',padding:'10px 13px',border:'1.5px solid #E0DCD6',borderRadius:9,fontSize:14,fontFamily:FF,background:'#FAFAF8',outline:'none',boxSizing:'border-box'};
+  const PILL_BASE={display:'flex',alignItems:'center',gap:10,padding:'11px 14px',borderRadius:9,border:'1.5px solid #E0DCD6',background:'#FAFAF8',cursor:'pointer',fontSize:13.5,fontWeight:500,fontFamily:FF,color:'#3F3A35',transition:'all .12s',userSelect:'none'};
+  const PILL_ON={...PILL_BASE,background:NAVY,borderColor:NAVY,color:'#fff'};
+
+  const HEADER_JSX=(
+    <div style={{background:NAVY,padding:'16px 24px',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
+      <img src="/logo.png" alt="WebArs" style={{height:36,width:'auto'}}
+        onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex';}}/>
+      <div style={{display:'none',alignItems:'center',gap:8,color:'#fff',fontWeight:800,fontSize:15,fontFamily:FF}}>WebArs</div>
+      <div style={{width:1,height:20,background:'rgba(255,255,255,.2)',margin:'0 4px'}}/>
+      <span style={{color:'rgba(255,255,255,.55)',fontSize:12.5,fontWeight:500,fontFamily:FF}}>Kunden-Formular</span>
+    </div>
+  );
+  const FOOTER_JSX=(
+    <div style={{background:NAVY,padding:'14px 24px',textAlign:'center',fontSize:11.5,color:'rgba(255,255,255,.35)',fontFamily:FF,flexShrink:0}}>
+      Erstellt mit WebArs · webars.at
+    </div>
+  );
+  const PAGE={minHeight:'100vh',fontFamily:FF,display:'flex',flexDirection:'column',background:NAVY};
+
+  useEffect(()=>{
     (async()=>{
       try{
         const dir=window.location.pathname+(window.location.pathname.endsWith('/')?'':'/');
@@ -7046,65 +7080,142 @@ function PublicFormPage({slug}){
     setSubmitting(false);
   };
 
-  if(loadErr)return(<div style={{minHeight:'100vh',background:'#F3F0EB',display:'flex',alignItems:'center',justifyContent:'center',padding:24,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'}}><div style={{maxWidth:500,background:'white',borderRadius:14,padding:'32px 28px',textAlign:'center'}}><div style={{fontSize:42,marginBottom:14}}>📭</div><div style={{fontSize:16,fontWeight:600,color:'#141210',marginBottom:8}}>Formular nicht verfügbar</div><div style={{fontSize:13.5,color:'#6B6560',lineHeight:1.6}}>{loadErr}</div></div></div>);
-  if(!form)return(<div style={{minHeight:'100vh',background:'#F3F0EB',display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{width:28,height:28,border:'2.5px solid rgba(0,0,0,.1)',borderTopColor:'#141210',borderRadius:'50%',animation:'spin .7s linear infinite',display:'block'}}></span></div>);
-  if(submitted)return(<div style={{minHeight:'100vh',background:'#F3F0EB',display:'flex',alignItems:'center',justifyContent:'center',padding:24,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'}}><div style={{maxWidth:540,background:'white',borderRadius:14,padding:'40px 32px',textAlign:'center',boxShadow:'0 1px 3px rgba(0,0,0,.04)'}}><div style={{fontSize:48,marginBottom:18}}>✓</div><div style={{fontSize:20,fontWeight:700,color:'#141210',marginBottom:12}}>Erfolgreich gesendet!</div><div style={{fontSize:14,color:'#6B6560',lineHeight:1.6,whiteSpace:'pre-wrap'}}>{form.thanks||'Vielen Dank für Ihre Antworten!'}</div></div></div>);
+  if(loadErr)return(
+    <div style={PAGE}>
+      {HEADER_JSX}
+      <div style={{flex:1,background:BG,display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
+        <div style={{maxWidth:500,background:'#fff',borderRadius:16,padding:'36px 30px',textAlign:'center',boxShadow:'0 2px 12px rgba(0,0,0,.07)'}}>
+          <div style={{fontSize:42,marginBottom:14}}>📭</div>
+          <div style={{fontSize:17,fontWeight:800,color:'#141210',marginBottom:8,fontFamily:FF}}>Formular nicht verfügbar</div>
+          <div style={{fontSize:13.5,color:'#6B6560',lineHeight:1.6,fontFamily:FF}}>{loadErr}</div>
+        </div>
+      </div>
+      {FOOTER_JSX}
+    </div>
+  );
+  if(!form)return(
+    <div style={PAGE}>
+      {HEADER_JSX}
+      <div style={{flex:1,background:BG,display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <span style={{width:28,height:28,border:'2.5px solid rgba(0,0,0,.1)',borderTopColor:NAVY,borderRadius:'50%',animation:'spin .7s linear infinite',display:'block'}}></span>
+      </div>
+      {FOOTER_JSX}
+    </div>
+  );
+  if(submitted)return(
+    <div style={PAGE}>
+      {HEADER_JSX}
+      <div style={{flex:1,background:BG,display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
+        <div style={{maxWidth:540,background:'#fff',borderRadius:16,padding:'44px 32px',textAlign:'center',boxShadow:'0 2px 12px rgba(0,0,0,.07)'}}>
+          <div style={{width:56,height:56,borderRadius:'50%',background:NAVY,color:'#fff',fontSize:26,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 18px'}}>✓</div>
+          <div style={{fontSize:20,fontWeight:800,color:'#141210',marginBottom:12,fontFamily:FF,letterSpacing:'-0.02em'}}>Erfolgreich gesendet!</div>
+          <div style={{fontSize:14,color:'#6B6560',lineHeight:1.65,whiteSpace:'pre-wrap',fontFamily:FF}}>{form.thanks||'Vielen Dank für Ihre Antworten!'}</div>
+        </div>
+      </div>
+      {FOOTER_JSX}
+    </div>
+  );
 
   return(
-    <div style={{minHeight:'100vh',background:'#F3F0EB',padding:'40px 16px',fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'}}>
-      <div style={{maxWidth:680,margin:'0 auto'}}>
-        <div style={{background:'white',borderRadius:14,padding:'32px 28px',boxShadow:'0 1px 3px rgba(0,0,0,.04)'}}>
-          <h1 style={{fontSize:24,fontWeight:800,color:'#141210',marginBottom:10,letterSpacing:'-0.02em'}}>{form.title}</h1>
-          {form.intro&&<p style={{fontSize:14,color:'#6B6560',lineHeight:1.65,marginBottom:24,whiteSpace:'pre-wrap'}}>{form.intro}</p>}
-          <form onSubmit={handleSubmit}>
+    <div style={PAGE}>
+      {HEADER_JSX}
+      <div style={{flex:1,background:BG,padding:'36px 16px 60px'}}>
+        <div style={{maxWidth:660,margin:'0 auto',display:'flex',flexDirection:'column',gap:18}}>
+
+          {/* Intro-Card */}
+          <div style={{...CARD,borderRadius:16,padding:'26px 28px'}}>
+            <h1 style={{fontSize:22,fontWeight:800,color:'#141210',marginBottom:8,letterSpacing:'-0.03em',fontFamily:FF,margin:'0 0 8px'}}>{form.title}</h1>
+            {form.intro&&<p style={{fontSize:14,color:'#6B6560',lineHeight:1.65,margin:'8px 0 0',fontFamily:FF,whiteSpace:'pre-wrap'}}>{form.intro}</p>}
+          </div>
+
+          <form onSubmit={handleSubmit} style={{display:'contents'}}>
             {(form.fields||[]).map(fld=>{
               const err=errors[fld.id];
               const errMark=err?{'data-field-err':'true'}:{};
-              if(fld.type==='section')return(<div key={fld.id} style={{marginTop:32,marginBottom:14,paddingBottom:8,borderBottom:'2px solid #141210'}}><div style={{fontSize:13,fontWeight:800,color:'#141210',textTransform:'uppercase',letterSpacing:'0.08em'}}>{fld.label}</div></div>);
-              if(fld.type==='info')return(<div key={fld.id} style={{background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:10,padding:'12px 16px',marginBottom:18,fontSize:13,color:'#9A3412',lineHeight:1.55}}>{fld.label}</div>);
+
+              if(fld.type==='section')return(
+                <div key={fld.id} style={{display:'flex',alignItems:'center',gap:12,margin:'4px 0'}}>
+                  <div style={{flex:1,height:1.5,background:NAVY}}/>
+                  <div style={{fontSize:11,fontWeight:800,color:NAVY,textTransform:'uppercase',letterSpacing:'0.1em',whiteSpace:'nowrap',fontFamily:FF}}>{fld.label}</div>
+                  <div style={{flex:1,height:1.5,background:NAVY}}/>
+                </div>
+              );
+
+              if(fld.type==='info')return(
+                <div key={fld.id} style={{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:10,padding:'13px 16px',fontSize:13,color:'#1E40AF',lineHeight:1.55,fontFamily:FF}}>
+                  {fld.label}
+                </div>
+              );
+
               return(
-                <div key={fld.id} style={{marginBottom:20}} {...errMark}>
-                  <label style={{display:'block',fontSize:14,fontWeight:600,color:'#141210',marginBottom:6}}>
-                    {fld.label}{fld.required&&<span style={{color:'#dc2626',marginLeft:3}}>*</span>}
+                <div key={fld.id} style={CARD} {...errMark}>
+                  <label style={{display:'block',fontSize:13,fontWeight:700,color:'#141210',marginBottom:4,fontFamily:FF}}>
+                    {fld.label}{fld.required&&<span style={{color:NAVY,marginLeft:3}}>*</span>}
                   </label>
-                  {fld.help&&<div style={{fontSize:12.5,color:'#6B6560',marginBottom:8,lineHeight:1.5}}>{fld.help}</div>}
-                  {fld.type==='text'&&<input type="text" value={values[fld.id]||''} onChange={e=>setVal(fld.id,e.target.value)} placeholder={fld.placeholder||''} style={{width:'100%',padding:'10px 12px',border:'1px solid '+(err?'#dc2626':'#D4CEC8'),borderRadius:8,fontSize:14,fontFamily:'inherit'}}/>}
-                  {fld.type==='textarea'&&<textarea value={values[fld.id]||''} onChange={e=>setVal(fld.id,e.target.value)} rows={4} style={{width:'100%',padding:'10px 12px',border:'1px solid '+(err?'#dc2626':'#D4CEC8'),borderRadius:8,fontSize:14,fontFamily:'inherit',resize:'vertical'}}/>}
+                  {fld.help&&<div style={{fontSize:12,color:'#A8A39D',marginBottom:10,lineHeight:1.5,fontFamily:FF}}>{fld.help}</div>}
+
+                  {fld.type==='text'&&(
+                    <input type="text" value={values[fld.id]||''} onChange={e=>setVal(fld.id,e.target.value)}
+                      placeholder={fld.placeholder||''}
+                      style={{...INPUT_BASE,borderColor:err?'#dc2626':values[fld.id]?NAVY:'#E0DCD6'}}/>
+                  )}
+                  {fld.type==='textarea'&&(
+                    <textarea value={values[fld.id]||''} onChange={e=>setVal(fld.id,e.target.value)} rows={4}
+                      style={{...INPUT_BASE,borderColor:err?'#dc2626':values[fld.id]?NAVY:'#E0DCD6',resize:'vertical'}}/>
+                  )}
                   {fld.type==='select'&&(
-                    <div style={{display:'grid',gap:6}}>
+                    <div style={{display:'grid',gap:7,marginTop:2}}>
                       {(fld.options||[]).map(opt=>(
-                        <label key={opt} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:values[fld.id]===opt?'#141210':'#FAFAF8',color:values[fld.id]===opt?'white':'#141210',border:'1px solid '+(values[fld.id]===opt?'#141210':'#E8E4DF'),borderRadius:8,cursor:'pointer',fontSize:14,transition:'all .12s'}}>
-                          <input type="radio" name={fld.id} checked={values[fld.id]===opt} onChange={()=>setVal(fld.id,opt)} style={{accentColor:'#141210'}}/>
+                        <div key={opt} style={values[fld.id]===opt?PILL_ON:PILL_BASE} onClick={()=>setVal(fld.id,opt)}>
+                          <div style={{width:16,height:16,borderRadius:'50%',border:'2px solid currentColor',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                            {values[fld.id]===opt&&<div style={{width:7,height:7,borderRadius:'50%',background:'currentColor'}}/>}
+                          </div>
                           <span>{opt}</span>
-                        </label>
+                        </div>
                       ))}
                     </div>
                   )}
                   {fld.type==='multiselect'&&(
-                    <div style={{display:'grid',gap:6}}>
+                    <div style={{display:'grid',gap:7,marginTop:2}}>
                       {(fld.options||[]).map(opt=>{
-                        const checked=(values[fld.id]||[]).includes(opt);
+                        const on=(values[fld.id]||[]).includes(opt);
                         return(
-                          <label key={opt} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:checked?'#141210':'#FAFAF8',color:checked?'white':'#141210',border:'1px solid '+(checked?'#141210':'#E8E4DF'),borderRadius:8,cursor:'pointer',fontSize:14,transition:'all .12s'}}>
-                            <input type="checkbox" checked={checked} onChange={()=>toggleMulti(fld.id,opt)} style={{accentColor:checked?'white':'#141210'}}/>
+                          <div key={opt} style={on?PILL_ON:PILL_BASE} onClick={()=>toggleMulti(fld.id,opt)}>
+                            <div style={{width:16,height:16,borderRadius:4,border:'2px solid currentColor',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700}}>
+                              {on&&'✓'}
+                            </div>
                             <span>{opt}</span>
-                          </label>
+                          </div>
                         );
                       })}
                     </div>
                   )}
                   {fld.type==='file'&&(
-                    <input type="file" multiple={fld.multiple} onChange={e=>setVal(fld.id,e.target.files)} style={{width:'100%',padding:10,border:'1px dashed #D4CEC8',borderRadius:8,fontSize:13,background:'#FAFAF8',cursor:'pointer'}}/>
+                    <label style={{display:'block',border:'2px dashed #D4CEC8',borderRadius:10,padding:'18px',textAlign:'center',fontSize:13,color:'#A8A39D',background:'#FAFAF8',cursor:'pointer',fontFamily:FF,transition:'border-color .15s'}}>
+                      <input type="file" multiple={fld.multiple} onChange={e=>setVal(fld.id,e.target.files)} style={{display:'none'}}/>
+                      📎 Dateien hier ablegen oder klicken zum Auswählen
+                    </label>
                   )}
-                  {err&&<div style={{fontSize:12.5,color:'#dc2626',marginTop:6}}>{err}</div>}
+                  {err&&<div style={{fontSize:12,color:'#dc2626',marginTop:6,fontFamily:FF}}>{err}</div>}
                 </div>
               );
             })}
-            <button type="submit" disabled={submitting} style={{width:'100%',marginTop:20,padding:'14px',background:'#141210',color:'white',border:'none',borderRadius:10,fontSize:15,fontWeight:700,cursor:submitting?'wait':'pointer',transition:'opacity .15s',opacity:submitting?.6:1}}>{submitting?'Wird gesendet…':'Absenden'}</button>
-            <div style={{textAlign:'center',marginTop:14,fontSize:11.5,color:'#A8A39D'}}>Ihre Antworten werden verschlüsselt übertragen.</div>
+
+            {/* Submit-Card */}
+            <div style={CARD}>
+              <button type="submit" disabled={submitting}
+                style={{width:'100%',padding:'14px',background:NAVY,color:'#fff',border:'none',borderRadius:10,fontSize:15,fontWeight:700,cursor:submitting?'wait':'pointer',fontFamily:FF,letterSpacing:'-0.01em',opacity:submitting?.65:1,transition:'opacity .15s'}}>
+                {submitting?'Wird gesendet…':'Absenden →'}
+              </button>
+              <div style={{textAlign:'center',marginTop:12,fontSize:12,color:'#B0ABA5',fontFamily:FF,display:'flex',alignItems:'center',justifyContent:'center',gap:5}}>
+                🔒 Ihre Antworten werden sicher übertragen
+              </div>
+            </div>
+
           </form>
         </div>
       </div>
+      {FOOTER_JSX}
     </div>
   );
 }
