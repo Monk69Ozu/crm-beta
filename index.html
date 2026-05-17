@@ -3440,9 +3440,147 @@ function AIEmployeesView({employees, onUpdate, externalNewTrigger, onExternalNew
 // ══════════════════════════════════════════════════════════════════
 //  CLAUDE KONTEN (mit Aufgaben-Zuweisung)
 // ══════════════════════════════════════════════════════════════════
+// ── Claude Usage helpers (5h / 7d / Design limits) ──────────────────────
+function claudeFmtCountdown(resetsAt, nowMs){
+  if(!resetsAt) return '';
+  const t = new Date(resetsAt).getTime();
+  if(!isFinite(t)) return '';
+  let s = Math.floor((t - nowMs)/1000);
+  if(s <= 0) return 'jetzt';
+  const d = Math.floor(s/86400); s -= d*86400;
+  const h = Math.floor(s/3600);  s -= h*3600;
+  const m = Math.floor(s/60);
+  if(d > 0) return `${d}d ${h}h`;
+  if(h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function claudePctColor(p){ if(p==null) return '#A8A39D'; if(p>=90) return '#dc2626'; if(p>=70) return '#d97706'; return '#16a34a'; }
+function claudePctBg(p){    if(p==null) return '#F5F3F0'; if(p>=90) return '#FEE2E2'; if(p>=70) return '#FEF3C7'; return '#DCFCE7'; }
+// If reset moment has passed, treat utilization as 0 (it auto-resets server-side too)
+function claudeEffPct(p, resetsAt, nowMs){
+  if(p == null) return null;
+  if(resetsAt){
+    const t = new Date(resetsAt).getTime();
+    if(isFinite(t) && nowMs >= t) return 0;
+  }
+  return p;
+}
+function ClaudeUsageBar({code, label, pct, resetsAt, nowMs}){
+  const eff = claudeEffPct(pct, resetsAt, nowMs);
+  if(eff == null && !resetsAt) return null;
+  const color = claudePctColor(eff);
+  const bg = claudePctBg(eff);
+  const w = eff == null ? 0 : Math.min(100, Math.max(0, eff));
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:7,fontSize:11}} title={label+(resetsAt?(' · Reset: '+new Date(resetsAt).toLocaleString('de-DE')):'')}>
+      <span style={{display:'inline-block',width:11,fontWeight:700,color:'#6B6560',textAlign:'center',fontSize:10}}>{code}</span>
+      <div style={{flex:1,height:6,background:bg,borderRadius:99,overflow:'hidden'}}>
+        <div style={{width:w+'%',height:'100%',background:color,transition:'width .4s'}}/>
+      </div>
+      <span style={{minWidth:34,textAlign:'right',color:color,fontWeight:700}}>{eff==null?'—':Math.round(eff)+'%'}</span>
+      {resetsAt && <span style={{minWidth:46,textAlign:'right',color:'#A8A39D',fontSize:10}}>{claudeFmtCountdown(resetsAt, nowMs)}</span>}
+    </div>
+  );
+}
+function ClaudeUsageBars({usage, compact}){
+  const [now, setNow] = useState(Date.now());
+  useEffect(()=>{ const t=setInterval(()=>setNow(Date.now()), 30000); return ()=>clearInterval(t); }, []);
+  const u = usage || {};
+  const hasAny = ['five_hour','seven_day','seven_day_omelette'].some(k => u[k] && (u[k].utilization != null || u[k].resets_at));
+  if(!hasAny) return null;
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:compact?3:5,marginTop:compact?2:4}}>
+      <ClaudeUsageBar code="S" label="Session 5 Stunden" pct={u.five_hour&&u.five_hour.utilization} resetsAt={u.five_hour&&u.five_hour.resets_at} nowMs={now}/>
+      <ClaudeUsageBar code="W" label="Woche 7 Tage"      pct={u.seven_day&&u.seven_day.utilization} resetsAt={u.seven_day&&u.seven_day.resets_at} nowMs={now}/>
+      <ClaudeUsageBar code="D" label="Claude Design"      pct={u.seven_day_omelette&&u.seven_day_omelette.utilization} resetsAt={u.seven_day_omelette&&u.seven_day_omelette.resets_at} nowMs={now}/>
+    </div>
+  );
+}
+// Build bookmarklet JS with the user's webhook secret baked in.
+function buildClaudeBookmarklet(secret){
+  const origin = (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://crm.webars.at';
+  const js = `(async()=>{const S=${JSON.stringify(secret)};const C=${JSON.stringify(origin)}+'/api/claude-usage/inbox?key='+S;try{const b=await fetch('/api/bootstrap',{credentials:'include'}).then(r=>r.json());const em=b&&b.account&&b.account.email_address;const ou=b&&b.account&&b.account.memberships&&b.account.memberships[0]&&b.account.memberships[0].organization&&b.account.memberships[0].organization.uuid;if(!em||!ou)throw new Error('Konto nicht gefunden – bist du auf claude.ai eingeloggt?');const u=await fetch('/api/organizations/'+ou+'/usage',{credentials:'include'}).then(r=>r.json());const r=await fetch(C,{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,org_uuid:ou,usage:u})});if(!r.ok)throw new Error('CRM antwortete '+r.status);const f=x=>x&&x.utilization!=null?Math.round(x.utilization)+'%':'-';alert('✅ WebArs CRM aktualisiert\\n\\nKonto: '+em+'\\nSession (5h): '+f(u.five_hour)+'\\nWoche (7d):  '+f(u.seven_day)+'\\nDesign:       '+f(u.seven_day_omelette));}catch(e){alert('❌ WebArs CRM:\\n\\n'+e.message);}})();`;
+  return 'javascript:' + js;
+}
+
+function ClaudeUsageSetupModal({onClose}){
+  const [secret, setSecret] = useState(null);
+  const [err, setErr] = useState('');
+  const auth = {Authorization:`Bearer ${window.WEBARS_API_TOKEN}`};
+  useEffect(()=>{
+    fetch('/api/claude-usage/config', {headers: auth})
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)))
+      .then(j => setSecret(j.webhook_secret))
+      .catch(e => setErr(e.message));
+  }, []);
+  const href = secret ? buildClaudeBookmarklet(secret) : '#';
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={e=>e.stopPropagation()} style={{width:620,maxHeight:'85vh',overflowY:'auto'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
+          <div>
+            <h2 style={{fontSize:18,fontWeight:700,letterSpacing:'-0.01em'}}>🚀 Claude-Limits einrichten</h2>
+            <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>1-Klick-Update direkt von claude.ai ins CRM.</div>
+          </div>
+          <button onClick={onClose} style={{background:'#F5F3F0',border:'none',borderRadius:8,padding:8,color:'#999',lineHeight:0}}><Icons.Close/></button>
+        </div>
+
+        {err && <div style={{padding:12,background:'#FEE2E2',color:'#991B1B',borderRadius:8,marginBottom:12,fontSize:13}}>Fehler: {err}</div>}
+
+        <div style={{background:'#FAFAF8',padding:14,borderRadius:10,marginBottom:14,fontSize:13,lineHeight:1.55,color:'#3F3A35'}}>
+          So funktioniert's: Du ziehst den grünen Knopf <b>einmalig</b> in deine Browser-Lesezeichen-Leiste. Danach reicht <b>1 Klick</b> während du auf <code style={{background:'#F5F3F0',padding:'1px 5px',borderRadius:4}}>claude.ai</code> eingeloggt bist — die Werte fliegen automatisch ins richtige Konto (über die E-Mail-Adresse).
+        </div>
+
+        <div style={{padding:'18px 16px',background:'white',border:'2px dashed #d4d4d4',borderRadius:10,textAlign:'center',marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10}}>Schritt 1 — Knopf in Lesezeichen-Leiste ziehen</div>
+          {secret ? (
+            <a href={href} draggable="true" onClick={e=>e.preventDefault()} style={{display:'inline-block',background:'#16a34a',color:'white',textDecoration:'none',padding:'12px 22px',borderRadius:10,fontWeight:700,fontSize:14,cursor:'grab'}}>📊 Claude → WebArs CRM</a>
+          ) : (
+            <span style={{color:'#A8A39D',fontSize:13}}>Lade Webhook-Schlüssel…</span>
+          )}
+          <div style={{fontSize:11,color:'#A8A39D',marginTop:10}}>Maus über den Knopf drücken, festhalten und nach oben in die Lesezeichen-Leiste ziehen (Strg+Umschalt+B blendet sie ein).</div>
+        </div>
+
+        <div style={{fontSize:13,lineHeight:1.7,color:'#3F3A35'}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>Schritt 2 — Auf claude.ai benutzen</div>
+          <ol style={{paddingLeft:20,margin:0}}>
+            <li>Auf <code style={{background:'#F5F3F0',padding:'1px 5px',borderRadius:4}}>claude.ai</code> gehen, bei einem Konto einloggen.</li>
+            <li>Oben in der Lesezeichen-Leiste auf <b>„Claude → WebArs CRM"</b> klicken.</li>
+            <li>Bestätigung-Popup erscheint → fertig, Werte sind im CRM. Für andere Konten: dort einloggen und Knopf nochmal klicken.</li>
+          </ol>
+        </div>
+
+        <div style={{background:'#FFF8E1',borderLeft:'4px solid #F5C518',padding:'10px 14px',borderRadius:6,marginTop:14,fontSize:12,color:'#6B5800'}}>
+          <b>Wichtig:</b> Bei jedem Claude-Konto im CRM muss die <b>E-Mail-Adresse</b> eingetragen sein (Feld „E-Mail / Account") — sonst kann der Knopf das richtige Konto nicht finden.
+        </div>
+
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:18}}>
+          <button className="btn btn-primary" onClick={onClose}>Verstanden</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ClaudeAccountModal({account, onSave, onClose, onDelete}){
   const isNew = !account;
-  const [form, setForm] = useState(account || {
+  // datetime-local needs local-time "YYYY-MM-DDTHH:MM"
+  const _dtToLocal = iso => {
+    if(!iso) return '';
+    const d = new Date(iso); if(isNaN(d)) return '';
+    const p = n => String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());
+  };
+  const _initUsage = (account && account.usage) || {};
+  const _seed = account ? {
+    ...account,
+    m_session_pct:   (_initUsage.five_hour && _initUsage.five_hour.utilization != null) ? _initUsage.five_hour.utilization : '',
+    m_session_reset: _dtToLocal(_initUsage.five_hour && _initUsage.five_hour.resets_at),
+    m_weekly_pct:    (_initUsage.seven_day && _initUsage.seven_day.utilization != null) ? _initUsage.seven_day.utilization : '',
+    m_weekly_reset:  _dtToLocal(_initUsage.seven_day && _initUsage.seven_day.resets_at),
+    m_design_pct:    (_initUsage.seven_day_omelette && _initUsage.seven_day_omelette.utilization != null) ? _initUsage.seven_day_omelette.utilization : '',
+    m_design_reset:  _dtToLocal(_initUsage.seven_day_omelette && _initUsage.seven_day_omelette.resets_at),
+  } : {
     id: uid(),
     avatar: CLAUDE_AVATARS[0],
     name: '',
@@ -3452,12 +3590,45 @@ function ClaudeAccountModal({account, onSave, onClose, onDelete}){
     notes: '',
     status: 'aktiv',
     createdAt: new Date().toISOString(),
-  });
+    m_session_pct: '', m_session_reset: '',
+    m_weekly_pct: '',  m_weekly_reset: '',
+    m_design_pct: '',  m_design_reset: '',
+  };
+  const [form, setForm] = useState(_seed);
   const updField = (k,v) => setForm(f=>({...f,[k]:v}));
   const submit = () => {
     if(!form.name.trim()) return;
     const finalPlan = form.plan === 'Anderes…' ? form.customPlan.trim() : form.plan;
-    onSave({...form, name:form.name.trim(), plan:finalPlan || form.plan, account:form.account.trim(), notes:form.notes.trim()});
+    // Build usage from manual fields (only overwrites limits the user actually touched)
+    const mkLimit = (p, r) => {
+      const hasP = p !== '' && p != null;
+      const hasR = r && String(r).length > 0;
+      if(!hasP && !hasR) return null;
+      return {
+        utilization: hasP ? Number(p) : null,
+        resets_at:   hasR ? new Date(r).toISOString() : null,
+      };
+    };
+    const fh = mkLimit(form.m_session_pct, form.m_session_reset);
+    const sd = mkLimit(form.m_weekly_pct,  form.m_weekly_reset);
+    const so = mkLimit(form.m_design_pct,  form.m_design_reset);
+    const prevUsage = (account && account.usage) || {};
+    const nextUsage = {
+      ...prevUsage,
+      five_hour:          fh,
+      seven_day:          sd,
+      seven_day_omelette: so,
+    };
+    // Strip the helper m_* fields before saving
+    const {m_session_pct, m_session_reset, m_weekly_pct, m_weekly_reset, m_design_pct, m_design_reset, ...rest} = form;
+    onSave({
+      ...rest,
+      name: form.name.trim(),
+      plan: finalPlan || form.plan,
+      account: form.account.trim(),
+      notes: form.notes.trim(),
+      usage: nextUsage,
+    });
   };
 
   return(
@@ -3514,9 +3685,40 @@ function ClaudeAccountModal({account, onSave, onClose, onDelete}){
           <input value={form.account} onChange={e=>updField('account',e.target.value)} placeholder="z.B. claude@webars.at"/>
         </div>
 
-        <div style={{marginBottom:18}}>
+        <div style={{marginBottom:14}}>
           <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Notizen</div>
-          <textarea value={form.notes} onChange={e=>updField('notes',e.target.value)} placeholder="Wofür wird dieser Account genutzt?" style={{minHeight:70}}/>
+          <textarea value={form.notes} onChange={e=>updField('notes',e.target.value)} placeholder="Wofür wird dieser Account genutzt?" style={{minHeight:60}}/>
+        </div>
+
+        <div style={{marginBottom:18,padding:14,background:'#FAFAF8',borderRadius:10,border:'1px solid rgba(0,0,0,0.05)'}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+            <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.06em'}}>Aktuelle Limits (manuell)</div>
+          </div>
+          <div style={{fontSize:11,color:'#A8A39D',marginBottom:10,lineHeight:1.5}}>Werte von <code style={{background:'#F5F3F0',padding:'1px 5px',borderRadius:4,fontSize:10.5}}>claude.ai</code> hier eintragen. Der 1-Klick-Knopf füllt das auch automatisch (siehe „Limits einrichten").</div>
+          {[
+            {key:'session', label:'Session-Limit (5 Std.)'},
+            {key:'weekly',  label:'Wochen-Limit (7 Tage)'},
+            {key:'design',  label:'Claude Design (Woche)'},
+          ].map(row => (
+            <div key={row.key} style={{display:'grid',gridTemplateColumns:'1fr 80px 1fr',gap:8,alignItems:'center',marginBottom:6}}>
+              <div style={{fontSize:12,color:'#6B6560',fontWeight:500}}>{row.label}</div>
+              <input
+                type="number" min="0" max="200" step="1"
+                placeholder="%"
+                value={form['m_'+row.key+'_pct']}
+                onChange={e=>updField('m_'+row.key+'_pct', e.target.value)}
+                style={{padding:'6px 8px',fontSize:12,textAlign:'right'}}
+              />
+              <input
+                type="datetime-local"
+                value={form['m_'+row.key+'_reset']}
+                onChange={e=>updField('m_'+row.key+'_reset', e.target.value)}
+                style={{padding:'6px 8px',fontSize:12}}
+                title="Reset-Zeitpunkt"
+              />
+            </div>
+          ))}
+          <div style={{fontSize:10.5,color:'#C0BBB5',marginTop:6}}>Leer lassen = Limit nicht anzeigen. Wenn der Reset-Zeitpunkt erreicht ist, springt der Balken automatisch auf 0 %.</div>
         </div>
 
         <div style={{display:'flex',gap:10,justifyContent:'space-between'}}>
@@ -3698,6 +3900,16 @@ function ClaudeAccountDetail({account, tasks, accounts, onBack, onUpdateTasks, o
                 <div style={{fontSize:13.5,color:'#3F3A35',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{account.notes}</div>
               </div>
             )}
+            {(account.usage && (['five_hour','seven_day','seven_day_omelette'].some(k => account.usage[k] && (account.usage[k].utilization != null || account.usage[k].resets_at)))) && (
+              <div style={{marginTop:16,padding:'14px 16px',background:'#FAFAF8',borderRadius:10,border:'1px solid rgba(0,0,0,0.05)'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                  <div style={{fontSize:10.5,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.06em'}}>Nutzungs-Limits</div>
+                  {account.usage.last_synced && <span style={{fontSize:10.5,color:'#A8A39D'}}>· zuletzt synchronisiert: {new Date(account.usage.last_synced).toLocaleString('de-DE')}</span>}
+                  <button onClick={()=>{window.open('https://claude.ai','_blank','noopener');setTimeout(()=>{alert('Auf claude.ai eingeloggt sein → in der Lesezeichen-Leiste auf „Claude → WebArs CRM" klicken.');},120);}} style={{marginLeft:'auto',fontSize:11,color:'#16a34a',cursor:'pointer',fontWeight:600,padding:'3px 9px',borderRadius:6,background:'#DCFCE7',border:'1px solid #86efac'}}>↻ Aktualisieren</button>
+                </div>
+                <ClaudeUsageBars usage={account.usage}/>
+              </div>
+            )}
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onEdit}><Icons.Edit/>Bearbeiten</button>
         </div>
@@ -3763,6 +3975,45 @@ function ClaudeAccountsView({accounts, tasks, onUpdateAccounts, onUpdateTasks, e
   const [accountModal, setAccountModal] = useState(null);
   const [taskModal, setTaskModal] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [usageSetupOpen, setUsageSetupOpen] = useState(false);
+
+  // ── Claude-Usage polling: server stores plaintext from bookmarklet,
+  // we merge into encrypted state by email match (case-insensitive).
+  const accountsRef = useRef(accounts);
+  useEffect(()=>{ accountsRef.current = accounts; }, [accounts]);
+  useEffect(()=>{
+    const auth = {Authorization:`Bearer ${window.WEBARS_API_TOKEN}`};
+    const poll = async () => {
+      try{
+        const r = await fetch('/api/claude-usage', {headers: auth});
+        if(!r.ok) return;
+        const j = await r.json();
+        const map = {};
+        for(const e of (j.entries||[])){ if(e.email) map[e.email.toLowerCase()] = e; }
+        const accs = accountsRef.current || [];
+        let changed = false;
+        const next = accs.map(a => {
+          const em = (a.account||'').trim().toLowerCase();
+          if(!em || !map[em]) return a;
+          const fresh = map[em];
+          const newUsage = {
+            five_hour:          fresh.five_hour,
+            seven_day:          fresh.seven_day,
+            seven_day_omelette: fresh.seven_day_omelette,
+            seven_day_opus:     fresh.seven_day_opus,
+            last_synced:        fresh.updated_at,
+          };
+          if(JSON.stringify(a.usage||null) === JSON.stringify(newUsage)) return a;
+          changed = true;
+          return {...a, usage: newUsage};
+        });
+        if(changed) onUpdateAccounts(next);
+      }catch(e){/* network blip — silent */}
+    };
+    poll();
+    const t = setInterval(poll, 60000);
+    return ()=>clearInterval(t);
+  }, []);
 
   useEffect(()=>{
     if(externalNewTrigger){
@@ -3822,10 +4073,13 @@ function ClaudeAccountsView({accounts, tasks, onUpdateAccounts, onUpdateTasks, e
 
   return(<>
     <div style={{flex:1,overflowY:'auto',padding:28}}>
-      <div style={{display:'flex',gap:6,marginBottom:20,padding:4,background:'#F5F3F0',borderRadius:10,width:'fit-content'}}>
-        {[{key:'konten',label:`Konten (${accounts.length})`},{key:'aufgaben',label:`Aufgaben (${tasks.length})`}].map(t=>(
-          <button key={t.key} onClick={()=>setTab(t.key)} style={{padding:'7px 14px',borderRadius:7,border:'none',background:tab===t.key?'white':'transparent',color:tab===t.key?'#141210':'#6B6560',fontWeight:600,fontSize:13,cursor:'pointer',transition:'all 0.15s',boxShadow:tab===t.key?'0 1px 3px rgba(0,0,0,0.06)':'none'}}>{t.label}</button>
-        ))}
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:20}}>
+        <div style={{display:'flex',gap:6,padding:4,background:'#F5F3F0',borderRadius:10,width:'fit-content'}}>
+          {[{key:'konten',label:`Konten (${accounts.length})`},{key:'aufgaben',label:`Aufgaben (${tasks.length})`}].map(t=>(
+            <button key={t.key} onClick={()=>setTab(t.key)} style={{padding:'7px 14px',borderRadius:7,border:'none',background:tab===t.key?'white':'transparent',color:tab===t.key?'#141210':'#6B6560',fontWeight:600,fontSize:13,cursor:'pointer',transition:'all 0.15s',boxShadow:tab===t.key?'0 1px 3px rgba(0,0,0,0.06)':'none'}}>{t.label}</button>
+          ))}
+        </div>
+        {tab==='konten' && <button className="btn btn-ghost btn-sm" onClick={()=>setUsageSetupOpen(true)} style={{marginLeft:'auto'}}>🚀 Limits einrichten</button>}
       </div>
 
       {tab === 'konten' && (
@@ -3857,9 +4111,11 @@ function ClaudeAccountsView({accounts, tasks, onUpdateAccounts, onUpdateTasks, e
                     </span>
                   </div>
                   {a.account && <div style={{fontSize:11.5,color:'#A8A39D',padding:'4px 8px',background:'#FAFAF8',borderRadius:6,fontFamily:'monospace',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.account}</div>}
-                  <div style={{display:'flex',gap:8,fontSize:11.5,color:'#6B6560',paddingTop:8,borderTop:'1px solid rgba(0,0,0,0.05)',marginTop:'auto'}}>
+                  <ClaudeUsageBars usage={a.usage} compact={true}/>
+                  <div style={{display:'flex',gap:8,fontSize:11.5,color:'#6B6560',paddingTop:8,borderTop:'1px solid rgba(0,0,0,0.05)',marginTop:'auto',alignItems:'center'}}>
                     <span><strong style={{color:'#141210'}}>{accTasks.length}</strong> Aufgaben</span>
                     {openCount>0 && <span>· <strong style={{color:'#0369a1'}}>{openCount}</strong> offen</span>}
+                    <span title="Auf claude.ai aktualisieren" onClick={ev=>{ev.preventDefault();ev.stopPropagation();window.open('https://claude.ai','_blank','noopener');setTimeout(()=>{alert('Auf claude.ai eingeloggt sein → in der Lesezeichen-Leiste auf „Claude → WebArs CRM" klicken.\n\n(Falls noch nicht eingerichtet: „Limits einrichten"-Knopf oben.)');},120);}} style={{marginLeft:'auto',fontSize:10.5,color:'#16a34a',cursor:'pointer',fontWeight:600,padding:'2px 6px',borderRadius:5}}>↻ aktualisieren</span>
                   </div>
                 </button>
               );
@@ -3922,6 +4178,7 @@ function ClaudeAccountsView({accounts, tasks, onUpdateAccounts, onUpdateTasks, e
 
     {accountModal === 'new' && <ClaudeAccountModal onSave={saveAccount} onClose={()=>setAccountModal(null)}/>}
     {accountModal && accountModal.edit && <ClaudeAccountModal account={accountModal.edit} onSave={saveAccount} onClose={()=>setAccountModal(null)} onDelete={removeAccount}/>}
+    {usageSetupOpen && <ClaudeUsageSetupModal onClose={()=>setUsageSetupOpen(false)}/>}
     {taskModal && taskModal.mode==='new' && (
       <ClaudeTaskModal task={{
         id: uid(), title: '', description: '', status: 'offen', priority: 'normal',

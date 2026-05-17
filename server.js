@@ -228,6 +228,34 @@ async function initDb() {
         INDEX idx_ts (ts)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // Claude usage tracking — plaintext (only utilization metrics, no customer data).
+    // Browser bookmarklet on claude.ai posts here; CRM polls + merges into encrypted state.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_claude_usage (
+        email                          VARCHAR(255) NOT NULL,
+        org_uuid                       VARCHAR(64)  DEFAULT NULL,
+        five_hour_pct                  DECIMAL(6,2) DEFAULT NULL,
+        five_hour_resets_at            DATETIME     DEFAULT NULL,
+        seven_day_pct                  DECIMAL(6,2) DEFAULT NULL,
+        seven_day_resets_at            DATETIME     DEFAULT NULL,
+        seven_day_omelette_pct         DECIMAL(6,2) DEFAULT NULL,
+        seven_day_omelette_resets_at   DATETIME     DEFAULT NULL,
+        seven_day_opus_pct             DECIMAL(6,2) DEFAULT NULL,
+        seven_day_opus_resets_at       DATETIME     DEFAULT NULL,
+        raw_json                       LONGTEXT     DEFAULT NULL,
+        updated_at                     DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (email)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    // Singleton config row (id=1) holding the bookmarklet's webhook secret.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_claude_usage_config (
+        id             TINYINT      NOT NULL DEFAULT 1,
+        webhook_secret VARCHAR(64)  NOT NULL,
+        created_at     DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // ── BACKUP HARDENING ───────────────────────────────────────────
     // Add tier column so we can keep different retention windows.
     // Existing rows get tier='legacy' (kept indefinitely — safe).
@@ -1076,6 +1104,148 @@ app.delete('/api/campaigns/:slug', requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (e) { await conn.rollback(); res.status(500).json({ error: e.message }); }
   finally { conn.release(); }
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  CLAUDE USAGE TRACKING
+//  Browser bookmarklet on claude.ai POSTs utilization here (CORS open,
+//  validated by per-install secret). CRM polls + merges by email into
+//  encrypted state.
+// ══════════════════════════════════════════════════════════════════
+function claudeUsageCors(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Max-Age', '86400');
+  res.header('Vary', 'Origin');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+}
+app.options('/api/claude-usage/inbox', claudeUsageCors);
+
+// Helper: parse ISO timestamp → MySQL DATETIME (UTC) or null
+function toMysqlDt(iso) {
+  if (!iso || typeof iso !== 'string') return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+// Helper: clamp utilization to a sane number or null
+function utilNum(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return Math.max(0, Math.min(999, n));
+}
+
+// GET /api/claude-usage/config — returns (and lazily creates) the webhook secret
+app.get('/api/claude-usage/config', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    let [rows] = await pool.query('SELECT webhook_secret FROM crm_claude_usage_config WHERE id = 1');
+    if (!rows.length) {
+      const secret = nodeCrypto.randomBytes(24).toString('base64url'); // 32 chars
+      await pool.query('INSERT INTO crm_claude_usage_config (id, webhook_secret) VALUES (1, ?)', [secret]);
+      rows = [{ webhook_secret: secret }];
+    }
+    res.json({ webhook_secret: rows[0].webhook_secret });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/claude-usage/inbox?key=SECRET — public (CORS), validated by secret
+//   Body: { email, org_uuid, usage: {five_hour:{utilization,resets_at}, seven_day:{...}, seven_day_omelette:{...}, seven_day_opus:{...}} }
+app.post('/api/claude-usage/inbox', claudeUsageCors, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const key = (req.query.key || '').toString();
+  if (!key) return res.status(401).json({ error: 'missing key' });
+  try {
+    const [rows] = await pool.query('SELECT webhook_secret FROM crm_claude_usage_config WHERE id = 1');
+    if (!rows.length) return res.status(404).json({ error: 'config not initialised — open the CRM "Claude-Limits einrichten" panel first' });
+    const a = Buffer.from(key, 'utf8');
+    const b = Buffer.from(rows[0].webhook_secret, 'utf8');
+    if (a.length !== b.length || !nodeCrypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'invalid key' });
+    }
+    const body = req.body || {};
+    const email = (body.email || '').toString().trim().toLowerCase();
+    if (!email || email.length > 255) return res.status(400).json({ error: 'email required (string, ≤255 chars)' });
+    const u = body.usage || {};
+    const fh = u.five_hour || {};
+    const sd = u.seven_day || {};
+    const so = u.seven_day_omelette || {};
+    const sp = u.seven_day_opus || {};
+    const raw = JSON.stringify(u).slice(0, 8000);
+    await pool.query(
+      `INSERT INTO crm_claude_usage
+         (email, org_uuid,
+          five_hour_pct, five_hour_resets_at,
+          seven_day_pct, seven_day_resets_at,
+          seven_day_omelette_pct, seven_day_omelette_resets_at,
+          seven_day_opus_pct, seven_day_opus_resets_at,
+          raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         org_uuid                     = VALUES(org_uuid),
+         five_hour_pct                = VALUES(five_hour_pct),
+         five_hour_resets_at          = VALUES(five_hour_resets_at),
+         seven_day_pct                = VALUES(seven_day_pct),
+         seven_day_resets_at          = VALUES(seven_day_resets_at),
+         seven_day_omelette_pct       = VALUES(seven_day_omelette_pct),
+         seven_day_omelette_resets_at = VALUES(seven_day_omelette_resets_at),
+         seven_day_opus_pct           = VALUES(seven_day_opus_pct),
+         seven_day_opus_resets_at     = VALUES(seven_day_opus_resets_at),
+         raw_json                     = VALUES(raw_json)`,
+      [
+        email, (body.org_uuid || null),
+        utilNum(fh.utilization), toMysqlDt(fh.resets_at),
+        utilNum(sd.utilization), toMysqlDt(sd.resets_at),
+        utilNum(so.utilization), toMysqlDt(so.resets_at),
+        utilNum(sp.utilization), toMysqlDt(sp.resets_at),
+        raw,
+      ]
+    );
+    console.log(`✓ Claude usage updated for ${email} (5h=${utilNum(fh.utilization)}% 7d=${utilNum(sd.utilization)}% design=${utilNum(so.utilization)}%)`);
+    res.json({ ok: true, email });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/claude-usage — list all usage rows (auth) — CRM polls this
+app.get('/api/claude-usage', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [rows] = await pool.query(
+      `SELECT email, org_uuid,
+              five_hour_pct, five_hour_resets_at,
+              seven_day_pct, seven_day_resets_at,
+              seven_day_omelette_pct, seven_day_omelette_resets_at,
+              seven_day_opus_pct, seven_day_opus_resets_at,
+              updated_at
+       FROM crm_claude_usage`
+    );
+    // Normalise DATETIME → ISO so the frontend can do new Date(...) consistently
+    const toIso = v => v ? new Date(v).toISOString() : null;
+    const entries = rows.map(r => ({
+      email: r.email,
+      org_uuid: r.org_uuid,
+      five_hour:          { utilization: r.five_hour_pct          == null ? null : Number(r.five_hour_pct),          resets_at: toIso(r.five_hour_resets_at) },
+      seven_day:          { utilization: r.seven_day_pct          == null ? null : Number(r.seven_day_pct),          resets_at: toIso(r.seven_day_resets_at) },
+      seven_day_omelette: { utilization: r.seven_day_omelette_pct == null ? null : Number(r.seven_day_omelette_pct), resets_at: toIso(r.seven_day_omelette_resets_at) },
+      seven_day_opus:     { utilization: r.seven_day_opus_pct     == null ? null : Number(r.seven_day_opus_pct),     resets_at: toIso(r.seven_day_opus_resets_at) },
+      updated_at: toIso(r.updated_at),
+    }));
+    res.json({ entries });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/claude-usage/:email — remove a specific entry (auth)
+app.delete('/api/claude-usage/:email', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const email = (req.params.email || '').toString().trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  try {
+    await pool.query('DELETE FROM crm_claude_usage WHERE email = ?', [email]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Admin: Full Reset ──────────────────────────────────────────────
