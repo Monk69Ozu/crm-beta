@@ -6949,6 +6949,7 @@ function TokensView({tokens,onUpdate}){
 function PublicFormPage({slug}){
   const [form,setForm]=useState(null);
   const [loadErr,setLoadErr]=useState('');
+  const [submitErr,setSubmitErr]=useState('');
   const [values,setValues]=useState({});
   const [submitted,setSubmitted]=useState(false);
   const [submitting,setSubmitting]=useState(false);
@@ -7028,30 +7029,25 @@ function PublicFormPage({slug}){
       if(firstErr)firstErr.scrollIntoView({behavior:'smooth',block:'center'});
       return;
     }
-    if(!form.submitEmail){setLoadErr('Diesem Formular fehlt eine Empfänger-Email — bitte den Betreiber informieren.');return;}
+    if(!form.submitEmail){setSubmitErr('Diesem Formular fehlt eine Empfänger-Email — bitte den Betreiber informieren.');return;}
     setSubmitting(true);
+    setSubmitErr('');
     try{
       const fd=new FormData();
-      // Subject + Antworten in lesbarer Form
       const nameField=(form.fields||[]).find(f=>/name/i.test(f.label||''))||form.fields[0];
       const senderName=nameField?values[nameField.id]:'Unbekannt';
       fd.append('_subject',`Neue Antwort: ${form.title} — ${senderName||'Anonym'}`);
       fd.append('_template','table');
       fd.append('_captcha','false');
-      // Felder
       (form.fields||[]).forEach(fld=>{
         if(fld.type==='section'||fld.type==='info')return;
         const v=values[fld.id];
         if(fld.type==='file'){
-          const files=v;
-          if(files&&files.length){
-            for(let i=0;i<files.length;i++)fd.append(`${fld.label||fld.id} (Datei ${i+1})`,files[i]);
-          }
+          if(v&&v.length){for(let i=0;i<v.length;i++)fd.append(`${fld.label||fld.id} (Datei ${i+1})`,v[i]);}
         }else{
           fd.append(fld.label||fld.id,Array.isArray(v)?v.join(', '):(v||''));
         }
       });
-      // Import-Link für CRM
       const exportData={};
       (form.fields||[]).forEach(fld=>{if(fld.type!=='section'&&fld.type!=='info'&&fld.type!=='file')exportData[fld.id]=values[fld.id];});
       const importPayload={formSlug:form.slug,formTitle:form.title,contactName:senderName||'Anonym',data:exportData,submittedAt:new Date().toISOString()};
@@ -7060,11 +7056,14 @@ function PublicFormPage({slug}){
       fd.append('🔗 In CRM importieren',importLink);
 
       const r=await fetch(`https://formsubmit.co/${encodeURIComponent(form.submitEmail)}`,{method:'POST',body:fd});
-      if(!r.ok)throw new Error('Server-Fehler '+r.status);
+      if(!r.ok)throw new Error('HTTP '+r.status);
       setSubmitted(true);
       window.scrollTo(0,0);
     }catch(err){
-      setLoadErr('Antwort konnte nicht gesendet werden: '+err.message+'. Bitte später erneut versuchen.');
+      const msg=err.message==='Failed to fetch'
+        ?'Verbindung zu FormSubmit.co fehlgeschlagen. Mögliche Ursachen: 1) Erste Nutzung — bitte Bestätigungs-E-Mail von FormSubmit.co prüfen und Link klicken. 2) Netzwerkproblem — bitte kurz warten und erneut versuchen.'
+        :'Fehler beim Senden: '+err.message;
+      setSubmitErr(msg);
     }
     setSubmitting(false);
   };
@@ -7180,9 +7179,12 @@ function PublicFormPage({slug}){
                     </div>
                   )}
                   {fld.type==='file'&&(
-                    <label style={{display:'block',border:'2px dashed #D4CEC8',borderRadius:10,padding:'18px',textAlign:'center',fontSize:13,color:'#A8A39D',background:'#FAFAF8',cursor:'pointer',fontFamily:FF,transition:'border-color .15s'}}>
+                    <label style={{display:'block',border:'2px dashed '+(values[fld.id]&&values[fld.id].length?NAVY:'#D4CEC8'),borderRadius:10,padding:'18px',textAlign:'center',fontSize:13,color:values[fld.id]&&values[fld.id].length?NAVY:'#A8A39D',background:'#FAFAF8',cursor:'pointer',fontFamily:FF,transition:'all .15s'}}>
                       <input type="file" multiple={fld.multiple} onChange={e=>setVal(fld.id,e.target.files)} style={{display:'none'}}/>
-                      📎 Dateien hier ablegen oder klicken zum Auswählen
+                      {values[fld.id]&&values[fld.id].length
+                        ?<span>✓ {values[fld.id].length} {values[fld.id].length===1?'Datei':'Dateien'} ausgewählt: {Array.from(values[fld.id]).map(f=>f.name).join(', ')}</span>
+                        :<span>📎 Dateien hier ablegen oder klicken zum Auswählen</span>
+                      }
                     </label>
                   )}
                   {err&&<div style={{fontSize:12,color:'#dc2626',marginTop:6,fontFamily:FF}}>{err}</div>}
@@ -7192,6 +7194,7 @@ function PublicFormPage({slug}){
 
             {/* Submit-Card */}
             <div style={CARD}>
+              {submitErr&&<div style={{background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:9,padding:'12px 14px',marginBottom:14,fontSize:13,color:'#991B1B',lineHeight:1.6,fontFamily:FF}}>{submitErr}</div>}
               <button type="submit" disabled={submitting}
                 style={{width:'100%',padding:'14px',background:NAVY,color:'#fff',border:'none',borderRadius:10,fontSize:15,fontWeight:700,cursor:submitting?'wait':'pointer',fontFamily:FF,letterSpacing:'-0.01em',opacity:submitting?.65:1,transition:'opacity .15s'}}>
                 {submitting?'Wird gesendet…':'Absenden →'}
