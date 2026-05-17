@@ -1172,7 +1172,7 @@ app.post('/api/claude-usage/inbox', claudeUsageCors, async (req, res) => {
     const u = body.usage || {};
     const fh = u.five_hour || {};
     const sd = u.seven_day || {};
-    const so = u.seven_day_omelette || {};
+    const so = u.seven_day_omelette || u.omelette_promotional || {};
     const sp = u.seven_day_opus || {};
     const raw = JSON.stringify(u).slice(0, 8000);
     await pool.query(
