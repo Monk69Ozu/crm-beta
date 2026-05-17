@@ -528,6 +528,17 @@ app.post('/api/backups', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/backups/email', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    await sendBackupEmail();
+    const configured = !!(nodemailer && SMTP_HOST && SMTP_USER && SMTP_PASS && RESET_TO);
+    res.json({ ok: true, emailSent: configured });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/backups/:id/restore — atomically snapshot current data, then restore
 // the chosen backup into crm_data. The pre-restore snapshot is itself a backup
 // with tier='pre-restore' (kept forever) — so a restore can NEVER lose data.
@@ -1322,6 +1333,56 @@ async function createBackup(tier = 'daily', note = '') {
   console.log(`✓ Backup created (tier=${tier}): ${name}`);
 }
 
+// ── Weekly offsite backup via email ──────────────────────────────
+// Sends the latest backup as encrypted .json attachment to RESET_TO.
+// Safe to email: content is AES-256-GCM encrypted, server cannot read it.
+async function sendBackupEmail() {
+  if (!nodemailer || !SMTP_HOST || !SMTP_USER || !SMTP_PASS || !RESET_TO) {
+    console.log('ℹ Weekly email backup skipped — SMTP not configured');
+    return;
+  }
+  try {
+    const [rows] = await pool.query(
+      'SELECT content, name, created_at FROM crm_backups ORDER BY created_at DESC LIMIT 1'
+    );
+    if (!rows.length) { console.warn('Email backup: no backup found to send'); return; }
+    const backup = rows[0];
+    const content = typeof backup.content === 'string' ? backup.content : JSON.stringify(backup.content);
+    const date = new Date(backup.created_at).toLocaleDateString('de-AT', { day:'2-digit', month:'2-digit', year:'numeric' });
+    const filename = `crm-backup-${new Date(backup.created_at).toISOString().slice(0,10)}.json`;
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST, port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      connectionTimeout: 10000, greetingTimeout: 8000,
+    });
+    await transporter.sendMail({
+      from: SMTP_FROM || SMTP_USER,
+      to: RESET_TO,
+      subject: `WebArs CRM — Wöchentliches Backup ${date}`,
+      text: [
+        `Hallo,`,
+        ``,
+        `anbei das automatische wöchentliche Backup deines WebArs CRM vom ${date}.`,
+        ``,
+        `Die Datei ist AES-256-GCM verschlüsselt — ohne dein CRM-Passwort ist sie für niemanden lesbar.`,
+        ``,
+        `So wiederherstellen:`,
+        `1. Einloggen auf crm.webars.at`,
+        `2. Einstellungen → Backups → "Backup importieren"`,
+        `3. Diese Datei auswählen`,
+        ``,
+        `Diese E-Mail wird automatisch jeden Sonntag gesendet.`,
+        `Backup-Name: ${backup.name}`,
+      ].join('\n'),
+      attachments: [{ filename, content, contentType: 'application/json' }],
+    });
+    console.log(`✓ Weekly backup email sent to ${RESET_TO} (${filename})`);
+  } catch (e) {
+    console.error('Weekly backup email failed:', e.message);
+  }
+}
+
 // ── Tiered backup scheduler ──────────────────────────────────────
 // Hourly: every hour on the hour, keep 48
 // Daily: 02:00 UTC, keep 90
@@ -1354,8 +1415,14 @@ function scheduleBackups() {
   if (daysToSun === 0 && nextSun <= now) nextSun.setUTCDate(nextSun.getUTCDate() + 7);
   else nextSun.setUTCDate(nextSun.getUTCDate() + daysToSun);
   setTimeout(() => {
-    createBackup('weekly').catch(e => console.error('Weekly backup failed:', e.message));
-    setInterval(() => createBackup('weekly').catch(e => console.error('Weekly backup failed:', e.message)), 7 * 24 * 60 * 60 * 1000);
+    createBackup('weekly')
+      .then(() => sendBackupEmail())
+      .catch(e => console.error('Weekly backup failed:', e.message));
+    setInterval(() => {
+      createBackup('weekly')
+        .then(() => sendBackupEmail())
+        .catch(e => console.error('Weekly backup failed:', e.message));
+    }, 7 * 24 * 60 * 60 * 1000);
   }, nextSun - now);
 
   console.log(`✓ Backup scheduler armed`);

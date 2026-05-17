@@ -2391,6 +2391,7 @@ function GithubSyncModal({cryptoKey, currentSettings, onSaved, onClose, onCleare
             <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
               <button className="btn btn-ghost btn-sm" onClick={downloadCurrentBackup} disabled={backupBusy}>↓ Backup jetzt herunterladen</button>
               <button className="btn btn-ghost btn-sm" onClick={loadServerBackups} disabled={backupBusy}>{backupBusy?'…':'Verlauf anzeigen'}</button>
+              {SELF_HOSTED&&<button className="btn btn-ghost btn-sm" onClick={async()=>{setBackupBusy(true);setBackupErr('');setBackupInfo('');try{const r=await fetch('/api/backups/email',{method:'POST',headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`}});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);setBackupInfo(j.emailSent?'✓ Backup-E-Mail wurde gesendet.':'⚠ SMTP nicht konfiguriert — E-Mail konnte nicht gesendet werden.');}catch(e){setBackupErr('Fehler: '+e.message);}setBackupBusy(false);}} disabled={backupBusy}>📧 Backup per E-Mail senden</button>}
               <button className="btn btn-ghost btn-sm" onClick={()=>{setShowMigExport(v=>!v);setMigExportPw('');setBackupErr('');}} disabled={backupBusy}>📦 Migration-Export</button>
               <button className="btn btn-sm" style={{background:'#FEF3C7',color:'#92400E',border:'1.5px solid #FCD34D'}} onClick={()=>{setShowRecovery(v=>!v);}} disabled={backupBusy}>🔧 Schlüssel-Recovery</button>
               {SELF_HOSTED && (
