@@ -6142,6 +6142,8 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
   const [rowHover,setRowHover]=useState(null);
   const timerRef=useRef(null);
   const blockRefs=useRef({});
+  const scrollRef=useRef(null);
+  const [tocOpen,setTocOpen]=useState(false);
 
   useEffect(()=>{setBlocks(parseBlocks(file.content));setFileName(file.name);setEditingName(false);},[file.id]);
 
@@ -6152,6 +6154,16 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
       if(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
     });
   },[file.id, blocks.length]);
+
+  const headings=blocks.filter(b=>['h1','h2','h3'].includes(b.type)&&b.content.trim());
+  const scrollToHeading=(blockId)=>{
+    const el=blockRefs.current[blockId];
+    if(!el)return;
+    const c=scrollRef.current;
+    if(!c){el.scrollIntoView({behavior:'smooth',block:'start'});return;}
+    const offset=el.getBoundingClientRect().top-c.getBoundingClientRect().top-24;
+    c.scrollBy({top:offset,behavior:'smooth'});
+  };
 
   const persist=useCallback(bl=>{clearTimeout(timerRef.current);timerRef.current=setTimeout(()=>onSaveContent(JSON.stringify(bl)),600);},[onSaveContent]);
   const setB=bl=>{setBlocks(bl);persist(bl);};
@@ -6333,18 +6345,39 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
           <div style={{fontSize:11,color:'#B0ABA5',marginTop:1}}>Gespeichert {fmtDate(file.updatedAt||file.createdAt)}</div>
         </div>
         <div style={{fontSize:11,color:'#D5D0CA',flexShrink:0}}>Auto-Speicherung</div>
+        {headings.length>0&&(
+          <button onClick={()=>setTocOpen(v=>!v)} title="Inhaltsverzeichnis"
+            style={{marginLeft:8,padding:'4px 9px',borderRadius:7,border:`1.5px solid ${tocOpen?accent:'rgba(0,0,0,0.1)'}`,background:tocOpen?accent+'15':'transparent',color:tocOpen?accent:'#A8A39D',fontSize:12.5,cursor:'pointer',fontWeight:600,transition:'all .15s',flexShrink:0}}>≡</button>
+        )}
       </div>
-      {/* Blöcke */}
-      <div style={{flex:1,overflowY:'auto',padding:'24px 32px 80px'}} onClick={e=>{if(e.target===e.currentTarget){setAddMenu(null);setSlashMenu(null);}}}>
-        <div style={{maxWidth:740,margin:'0 auto'}}>
-          {blocks.map((b,i)=>renderBlock(b,i))}
-          <div style={{paddingTop:16}}>
-            <button onMouseDown={e=>{e.preventDefault();insertB(blocks[blocks.length-1]?.id||null,'text');}}
-              style={{background:'none',border:`1.5px dashed ${accent}33`,borderRadius:9,padding:'7px 20px',fontSize:13,color:'#C8C3BD',cursor:'pointer',transition:'all .12s',width:'100%',textAlign:'left'}}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor=accent;e.currentTarget.style.color=accent;e.currentTarget.style.background=accent+'0a';}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor=accent+'33';e.currentTarget.style.color='#C8C3BD';e.currentTarget.style.background='none';}}>+ Block hinzufügen</button>
+      {/* Blöcke + ToC */}
+      <div style={{flex:1,display:'flex',overflow:'hidden'}}>
+        <div ref={scrollRef} style={{flex:1,overflowY:'auto',padding:'24px 32px 80px'}} onClick={e=>{if(e.target===e.currentTarget){setAddMenu(null);setSlashMenu(null);}}}>
+          <div style={{maxWidth:740,margin:'0 auto'}}>
+            {blocks.map((b,i)=>renderBlock(b,i))}
+            <div style={{paddingTop:16}}>
+              <button onMouseDown={e=>{e.preventDefault();insertB(blocks[blocks.length-1]?.id||null,'text');}}
+                style={{background:'none',border:`1.5px dashed ${accent}33`,borderRadius:9,padding:'7px 20px',fontSize:13,color:'#C8C3BD',cursor:'pointer',transition:'all .12s',width:'100%',textAlign:'left'}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor=accent;e.currentTarget.style.color=accent;e.currentTarget.style.background=accent+'0a';}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor=accent+'33';e.currentTarget.style.color='#C8C3BD';e.currentTarget.style.background='none';}}>+ Block hinzufügen</button>
+            </div>
           </div>
         </div>
+        {tocOpen&&headings.length>0&&(
+          <div style={{width:210,flexShrink:0,borderLeft:'1px solid rgba(0,0,0,0.07)',overflowY:'auto',padding:'18px 12px 32px',background:'#FAFAF8'}}>
+            <div style={{fontSize:10.5,fontWeight:700,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:10,paddingLeft:6}}>Inhalt</div>
+            {headings.map(h=>(
+              <button key={h.id} onClick={()=>scrollToHeading(h.id)}
+                style={{display:'block',width:'100%',textAlign:'left',paddingTop:5,paddingBottom:5,paddingRight:6,paddingLeft:h.type==='h1'?6:h.type==='h2'?16:26,background:'none',border:'none',borderRadius:7,cursor:'pointer',fontSize:h.type==='h1'?13:12,fontWeight:h.type==='h1'?700:h.type==='h2'?600:500,color:'#3F3A35',lineHeight:1.35,transition:'all .1s'}}
+                onMouseEnter={e=>{e.currentTarget.style.background=accent+'18';e.currentTarget.style.color=accent;}}
+                onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='#3F3A35';}}>
+                {h.type==='h2'&&<span style={{color:accent,marginRight:5,fontSize:10}}>›</span>}
+                {h.type==='h3'&&<span style={{color:'#C8C3BD',marginRight:5,fontSize:10}}>·</span>}
+                {h.content}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
