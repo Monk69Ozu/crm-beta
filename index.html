@@ -6799,7 +6799,7 @@ function CSVImportModal({sections,onImport,onClose}){
 
 function TokenEditModal({token, onSave, onClose}){
   const SERVICES=['GitHub','Anthropic','OpenAI','Google','AWS','Azure','Stripe','Twilio','SendGrid','Custom'];
-  const [form,setForm]=React.useState({service:token?.service||'GitHub',account:token?.account||'',token:token?.token||'',notes:token?.notes||''});
+  const [form,setForm]=React.useState({service:token?.service||'GitHub',account:token?.account||'',token:token?.token||'',notes:token?.notes||'',refreshUrl:token?.refreshUrl||''});
   const [showTok,setShowTok]=React.useState(!token);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   return(
@@ -6831,6 +6831,11 @@ function TokenEditModal({token, onSave, onClose}){
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Notizen (optional)</label>
             <input value={form.notes} onChange={e=>f('notes',e.target.value)} placeholder="z.B. Ablaufdatum, Berechtigungen..."/>
           </div>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Aktualisierungs-URL (optional)</label>
+            <input value={form.refreshUrl} onChange={e=>f('refreshUrl',e.target.value)} placeholder="z.B. https://github.com/settings/tokens"/>
+            <div style={{fontSize:11,color:'#A8A39D',marginTop:4}}>Die Seite, die beim Klick auf ↻ Aktualisieren geöffnet wird.</div>
+          </div>
         </div>
         <div style={{display:'flex',justifyContent:'flex-end',gap:10,marginTop:24}}>
           <button className="btn btn-ghost" onClick={onClose}>Abbrechen</button>
@@ -6853,8 +6858,22 @@ function TokensView({tokens,onUpdate}){
   };
   const del=(id)=>{if(window.confirm('Token wirklich löschen?'))onUpdate(tokens.filter(t=>t.id!==id));};
   const copy=(id,val)=>{navigator.clipboard.writeText(val).catch(()=>{});setCopied(id);setTimeout(()=>setCopied(null),1500);};
+  const handleRefresh=(t)=>{
+    localStorage.setItem('crm_pending_token_target',JSON.stringify({tokenId:t.id,label:t.service+(t.account?' / '+t.account:'')}));
+    window.open(t.refreshUrl,'_blank','noopener');
+    setTimeout(()=>alert('Seite geöffnet.\n\nKopiere dort den neuen Token, dann klicke auf das Lesezeichen „↻ Token → CRM" in deiner Browser-Lesezeichen-Leiste.'),150);
+  };
+  const bookmarkletCode=`javascript:(function(){var v=prompt('Neuen Token-Wert einfügen:');if(!v||!v.trim())return;try{localStorage.setItem('crm_pending_token_value',JSON.stringify({value:v.trim(),setAt:Date.now()}));}catch(e){}window.open('${window.location.origin}/?crm_pending_token=1','_blank');})()`;
   return(
     <div style={{flex:1,overflowY:'auto',padding:'28px'}}>
+      <div style={{background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:12,padding:'14px 18px',marginBottom:20,display:'flex',alignItems:'center',gap:14}}>
+        <div style={{fontSize:22}}>🔖</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#0369A1',marginBottom:3}}>Lesezeichen einrichten (einmalig)</div>
+          <div style={{fontSize:12,color:'#0369A1',opacity:.8}}>Ziehe diesen Link in deine Browser-Lesezeichen-Leiste — danach kannst du Tokens mit einem Klick aktualisieren:</div>
+        </div>
+        <a href={bookmarkletCode} onClick={e=>e.preventDefault()} onDragStart={()=>{}} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:8,background:'#0369A1',color:'white',fontSize:12.5,fontWeight:700,cursor:'grab',textDecoration:'none',flexShrink:0,userSelect:'none'}} draggable="true">↻ Token → CRM</a>
+      </div>
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:20}}>
         <button className="btn btn-primary" onClick={()=>setModal('add')}><Icons.Plus/>Neuer Token</button>
       </div>
@@ -6890,6 +6909,7 @@ function TokensView({tokens,onUpdate}){
                   {t.notes&&<div style={{fontSize:11.5,color:'#9CA3AF',marginTop:5}}>{t.notes}</div>}
                 </div>
                 <div style={{display:'flex',gap:6,flexShrink:0}}>
+                  {t.refreshUrl&&<button className="btn btn-ghost btn-sm" onClick={()=>handleRefresh(t)} style={{color:'#16a34a',borderColor:'#86efac',background:'#F0FDF4'}} title="Token aktualisieren">↻ Aktualisieren</button>}
                   <button className="btn btn-ghost btn-sm" onClick={()=>setModal(t)}>Bearbeiten</button>
                   <button className="btn btn-danger btn-sm" onClick={()=>del(t.id)}>Löschen</button>
                 </div>
@@ -7822,6 +7842,28 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
         setTimeout(()=>alert('Diese Antwort wurde bereits importiert.'),100);
       }
     }catch(e){console.warn('formresponse import failed:',e);}
+  },[]);
+
+  // Deep-link handler: ?crm_pending_token=1 (from token-refresh bookmarklet)
+  useEffect(()=>{
+    try{
+      const params=new URLSearchParams(window.location.search);
+      if(!params.get('crm_pending_token'))return;
+      window.history.replaceState({},'',window.location.pathname);
+      const targetStr=localStorage.getItem('crm_pending_token_target');
+      const valueStr=localStorage.getItem('crm_pending_token_value');
+      if(!targetStr||!valueStr)return;
+      const target=JSON.parse(targetStr);
+      const valueData=JSON.parse(valueStr);
+      localStorage.removeItem('crm_pending_token_target');
+      localStorage.removeItem('crm_pending_token_value');
+      if(Date.now()-valueData.setAt>5*60*1000){setTimeout(()=>alert('Token-Aktualisierung abgelaufen (>5 Min). Bitte erneut versuchen.'),100);return;}
+      if(!target.tokenId||!valueData.value)return;
+      const updated=(state.tokens||[]).map(tok=>tok.id===target.tokenId?{...tok,token:valueData.value}:tok);
+      upd({tokens:updated});
+      setActiveId(TOKENS_VIEW);
+      setTimeout(()=>alert(`✓ Token "${target.label}" wurde erfolgreich aktualisiert!`),200);
+    }catch(e){console.warn('crm_pending_token import failed:',e);}
   },[]);
 
   // Deep-link handler: ?draft=BASE64JSON (from Jarvis)
