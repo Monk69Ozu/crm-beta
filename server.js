@@ -1567,7 +1567,7 @@ app.get('/q/:token', async (req, res) => {
   const status = rows[0].status;
   const token = req.params.token;
   const fmtDate = d => { if(!d) return '—'; try { return new Date(d).toLocaleDateString('de-AT',{day:'2-digit',month:'long',year:'numeric'}); } catch(e){ const p=d.slice(0,10).split('-'); return `${p[2]}.${p[1]}.${p[0]}`; } };
-  const fmtMoney = n => Number(n||0).toLocaleString('de-AT', {minimumFractionDigits:2,maximumFractionDigits:2}) + ' €';
+  const fmtMoney = n => { const v = Number(n||0); const parts = v.toFixed(2).split('.'); const int = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,'.'); return int + ',' + parts[1] + ' €'; };
   const accent = '#141210';
   const lineItems = (quote.items||[]).filter(i=>i.type!=='heading');
   const subtotal = lineItems.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.unitPrice)||0),0);
@@ -1636,7 +1636,7 @@ app.get('/q/:token', async (req, res) => {
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#F5F3EF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1A1714;-webkit-font-smoothing:antialiased}
 .paper{max-width:720px;margin:0 auto;padding:0 16px 80px}
-.banner{width:100%;height:220px;background:#0F0E0C;position:relative;overflow:hidden;margin-bottom:0}
+.banner{width:100%;height:300px;background:#0F0E0C;position:relative;overflow:hidden;margin-bottom:0}
 .banner svg{position:absolute;inset:0;width:100%;height:100%}
 .banner-num{position:absolute;bottom:18px;left:28px}
 .banner-num .eyebrow{font-size:9px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:3px}
@@ -1647,7 +1647,7 @@ body{background:#F5F3EF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .brand{font-weight:700;font-size:16px;color:#141210;letter-spacing:-.01em}
 .website{font-size:12px;color:#9A9590}
 .label{font-size:9px;color:#9A9590;text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:5px}
-.client-name{font-size:36px;font-weight:800;color:#141210;letter-spacing:-.03em;line-height:1;margin:0 0 20px 0}
+.client-name{font-size:44px;font-weight:800;color:#141210;letter-spacing:-.03em;line-height:1;margin:0 0 20px 0}
 .project-block{border-top:2px solid #141210;padding-top:10px;margin-bottom:28px}
 .project-title{font-size:20px;font-weight:700;color:#141210;letter-spacing:-.01em;line-height:1.3}
 .meta-strip{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1.5px solid #141210;margin-bottom:32px}
@@ -1677,7 +1677,7 @@ body{background:#F5F3EF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .company-footer{padding-top:14px;border-top:.5px solid #E5E1DC;display:flex;gap:20px;font-size:10px;color:#9A9590;line-height:1.6}
 .company-footer .cf-col{flex:1}
 .company-footer .cf-label{font-weight:600;color:#5F5A55;margin-bottom:2px}
-@media(max-width:500px){.card{padding:24px 20px}.client-name{font-size:28px}.banner{height:160px}}
+@media(max-width:500px){.card{padding:24px 20px}.client-name{font-size:30px}.banner{height:200px}}
 </style></head><body>
 <div class="paper">
   <div class="banner">
@@ -1700,6 +1700,7 @@ body{background:#F5F3EF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
     </div>
     <div class="label">Für</div>
     <h1 class="client-name">${quote.contactSnapshot?.firma||'—'}</h1>
+    <div style="border-top:2px solid #141210;margin-bottom:20px"></div>
     ${quote.title?`<div class="project-block"><div class="label">Projekt</div><div class="project-title">${quote.title}</div></div>`:''}
     <div class="meta-strip">
       <div class="meta-cell"><div class="meta-label">Datum</div><div class="meta-value">${fmtDate(quote.date)}</div></div>
