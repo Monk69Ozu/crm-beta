@@ -6602,6 +6602,138 @@ function ColdOutreachView({campaigns, onUpdate}){
   );
 }
 
+// ─── LINKEDIN AUTOMATION VIEW ────────────────────────────────────────────────
+function LinkedInAutomationView(){
+  const [status, setStatus] = React.useState('stopped'); // 'stopped' | 'running'
+  const [config, setConfig] = React.useState({
+    zielgruppe: 'HVAC, Plumber, Electrician, Roofer — Owner/Founder — USA',
+    tagLimit: 20,
+    message: "I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+  });
+  const [log] = React.useState([]);
+
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
+      {/* Status Banner */}
+      <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px',display:'flex',alignItems:'center',gap:16}}>
+        <div style={{width:12,height:12,borderRadius:'50%',background:status==='running'?'#22c55e':'#d1d5db',flexShrink:0,boxShadow:status==='running'?'0 0 0 4px rgba(34,197,94,.2)':'none',transition:'all .3s'}}/>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>{status==='running'?'Läuft — sendet Nachrichten':'Gestoppt'}</div>
+          <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>{status==='running'?'LinkedIn-Outreach aktiv':'Bereit zum Starten'}</div>
+        </div>
+        <button
+          onClick={()=>setStatus(s=>s==='running'?'stopped':'running')}
+          className={'btn btn-sm '+(status==='running'?'btn-danger':'btn-primary')}
+        >{status==='running'?'Stop':'Start'}</button>
+      </div>
+
+      {/* Konfiguration */}
+      <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
+        <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Konfiguration</div>
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe</label>
+            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))}
+              placeholder="z.B. HVAC Owner, USA"/>
+          </div>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Nachrichten pro Tag</label>
+            <input type="number" value={config.tagLimit} min={1} max={30}
+              onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))}
+              style={{maxWidth:100}}/>
+            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfehlung: max. 20–25 um Account-Sperren zu vermeiden</div>
+          </div>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Connection-Nachricht (max. 300 Zeichen)</label>
+            <textarea value={config.message} onChange={e=>setConfig(c=>({...c,message:e.target.value.slice(0,300)}))}
+              style={{minHeight:80,fontFamily:'inherit',resize:'vertical'}}/>
+            <div style={{fontSize:11,color:config.message.length>280?'#ef4444':'#C0BBB5',marginTop:4,textAlign:'right'}}>{config.message.length}/300</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Log */}
+      <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
+        <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Aktivitäts-Log</div>
+        {log.length===0?(
+          <div style={{textAlign:'center',padding:'40px 20px',color:'#C8C3BD'}}>
+            <div style={{fontSize:32,marginBottom:10,opacity:.4}}>📋</div>
+            <div style={{fontSize:13,fontWeight:500}}>Noch keine Aktivität</div>
+            <div style={{fontSize:12,marginTop:4}}>Gesendet Connection Requests erscheinen hier</div>
+          </div>
+        ):(
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {log.map((entry,i)=>(
+              <div key={i} style={{display:'flex',gap:12,padding:'8px 12px',background:'#F8F7F5',borderRadius:8,fontSize:12}}>
+                <span style={{color:'#A8A39D',flexShrink:0}}>{entry.time}</span>
+                <span style={{color:'#3F3A35',flex:1}}>{entry.name}</span>
+                <span style={{color:entry.ok?'#22c55e':'#ef4444'}}>{entry.ok?'✓ Gesendet':'✗ Fehler'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── COLD OUTREACH CONTAINER ──────────────────────────────────────────────────
+function ColdOutreachContainer({campaigns, onUpdate}){
+  const [subView, setSubView] = React.useState(null); // null | 'kampagnen' | 'automatisierung'
+
+  if(!subView) return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',flexShrink:0}}>
+        <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>📨 Cold Outreach</h1>
+        <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>Wähle einen Bereich</div>
+      </div>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:40,gap:24,background:'#F8F7F5'}}>
+        {[
+          {id:'kampagnen',      icon:'📋', title:'Kampagnen',      desc:'CSV-Leads verwalten und\nKampagnen-Status tracken'},
+          {id:'automatisierung',icon:'🤖', title:'Automatisierung',desc:'LinkedIn-Outreach automatisch\nversenden und tracken'},
+        ].map(card=>(
+          <div key={card.id} onClick={()=>setSubView(card.id)}
+            style={{background:'white',borderRadius:16,border:'1px solid rgba(0,0,0,.08)',boxShadow:'0 2px 8px rgba(0,0,0,.06)',cursor:'pointer',padding:'36px 32px',width:240,textAlign:'center',transition:'all .15s'}}
+            onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-3px)';e.currentTarget.style.boxShadow='0 10px 28px rgba(0,0,0,.12)';}}
+            onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)';e.currentTarget.style.boxShadow='0 2px 8px rgba(0,0,0,.06)';}}>
+            <div style={{fontSize:44,marginBottom:14}}>{card.icon}</div>
+            <div style={{fontSize:16,fontWeight:700,color:'#141210',marginBottom:8}}>{card.title}</div>
+            <div style={{fontSize:13,color:'#A8A39D',lineHeight:1.6,whiteSpace:'pre-line'}}>{card.desc}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  if(subView==='kampagnen') return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'10px 24px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setSubView(null)}>← Zurück</button>
+        <div style={{flex:1}}>
+          <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>📋 Kampagnen</h1>
+          <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>
+            {(campaigns||[]).filter(c=>c.status==='aktiv').length} aktiv · {(campaigns||[]).reduce((s,c)=>s+(c.csvFiles||[]).reduce((a,f)=>a+f.count,0),0).toLocaleString('de-AT')} Leads gesamt
+          </div>
+        </div>
+      </div>
+      <ColdOutreachView campaigns={campaigns} onUpdate={onUpdate}/>
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'10px 24px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setSubView(null)}>← Zurück</button>
+        <div style={{flex:1}}>
+          <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>🤖 LinkedIn Automatisierung</h1>
+          <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>LinkedIn Outreach — automatisiert mit KI</div>
+        </div>
+      </div>
+      <LinkedInAutomationView/>
+    </div>
+  );
+}
+
 function CampaignsView({campaigns, onUpdate}){
   const [view,setView]=useState('overview'); // 'overview' | 'campaign'
   const [selCamp,setSelCamp]=useState(null);
@@ -9070,17 +9202,9 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             onUpdateForms={forms=>upd({forms})}
             onUpdateResponses={formResponses=>upd({formResponses})}
           />
-        </>) : activeId === COLD_OUTREACH_VIEW ? (<>
-          <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
-            <div style={{flex:1}}>
-              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>📨 Cold Outreach</h1>
-              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>
-                {(state.coldCampaigns||[]).filter(c=>c.status==='aktiv').length} aktiv · {(state.coldCampaigns||[]).reduce((s,c)=>s+(c.csvFiles||[]).reduce((a,f)=>a+f.count,0),0).toLocaleString('de-AT')} Leads gesamt
-              </div>
-            </div>
-          </div>
-          <ColdOutreachView campaigns={state.coldCampaigns||[]} onUpdate={coldCampaigns=>upd({coldCampaigns})}/>
-        </>) : activeId === TOKENS_VIEW ? (<>
+        </>) : activeId === COLD_OUTREACH_VIEW ? (
+          <ColdOutreachContainer campaigns={state.coldCampaigns||[]} onUpdate={coldCampaigns=>upd({coldCampaigns})}/>
+        ) : activeId === TOKENS_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
             <div style={{flex:1}}>
               <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>Tokens & API Keys</h1>
