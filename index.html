@@ -602,7 +602,7 @@ async function loadTOTPSecret(key) {
 async function saveEncrypted(key, data) {
   const dataWithTs = {...data, _savedAt: Date.now()};
   const encrypted = await aesEncrypt(key, dataWithTs);
-  localStorage.setItem(DATA_KEY, JSON.stringify(encrypted));
+  try { localStorage.setItem(DATA_KEY, JSON.stringify(encrypted)); } catch(e) { console.warn('[save] localStorage voll:', e); }
   // Auto-snapshot every 4 hours (no internet needed)
   const now = Date.now();
   if(now - _lastSnapAt > 4*3600*1000){ saveLocalSnapshot(encrypted); _lastSnapAt = now; }
@@ -9254,7 +9254,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             }}
             onOpen={(q)=>setEditingQuote(q)}
             onDelete={(id)=>upd({quotes:(state.quotes||[]).filter(q=>q.id!==id)})}
-            onDuplicate={q=>{const settings=state.quoteSettings||DEFAULT_QUOTE_SETTINGS;const duped={...q,id:uid(),number:nextQuoteNumber(settings),createdAt:new Date().toISOString(),status:'entwurf'};upd({quotes:[...(state.quotes||[]),duped],quoteSettings:{...settings,quoteCounter:(settings.quoteCounter||1)+1}});}}
+            onDuplicate={async q=>{const settings=state.quoteSettings||DEFAULT_QUOTE_SETTINGS;const duped={...q,id:uid(),number:nextQuoteNumber(settings),createdAt:new Date().toISOString(),status:'entwurf'};const patch={quotes:[...(state.quotes||[]),duped],quoteSettings:{...settings,quoteCounter:(settings.quoteCounter||1)+1}};upd(patch);skipNextSaveRef.current=true;await saveEncrypted(cryptoKey,{...state,...patch}).catch(console.error);}}
             onSettings={()=>setModal('quoteSettings')}
           />
         </>) : activeId === FORMS_VIEW ? (<>
