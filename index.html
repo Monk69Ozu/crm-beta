@@ -4494,7 +4494,7 @@ function QuoteEditor({quote, contacts, settings, onSave, onClose, onPreview}){
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}>
           <div style={{flex:1}}>
             <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
-              <h2 style={{fontSize:18,fontWeight:700,letterSpacing:'-0.01em'}}>Angebot {q.number}</h2>
+              <input value={q.number} onChange={e=>u('number',e.target.value)} style={{fontSize:18,fontWeight:700,letterSpacing:'-0.01em',fontFamily:'monospace',border:'none',borderBottom:'2px solid transparent',borderRadius:0,padding:'0 2px',background:'transparent',width:160,outline:'none',transition:'border-color .15s'}} onFocus={e=>e.target.style.borderBottomColor='#141210'} onBlur={e=>e.target.style.borderBottomColor='transparent'} title="Nummer bearbeiten"/>
               <select value={q.status} onChange={e=>{const s=e.target.value;setQ(p=>({...p,status:s,sentAt:s==='gesendet'&&!p.sentAt?new Date().toISOString():p.sentAt}));}} style={{width:'auto',padding:'4px 8px',fontSize:11.5,fontWeight:600,background:'#F5F3F0',border:'1.5px solid transparent'}}>
                 {QUOTE_STATUSES.map(st=><option key={st.key} value={st.key}>{st.label}</option>)}
               </select>
