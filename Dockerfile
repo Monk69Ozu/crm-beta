@@ -8,8 +8,12 @@ RUN npm install --omit=dev --no-audit --no-fund
 FROM node:20-alpine
 WORKDIR /app
 
-# Non-root user for security
-RUN addgroup -S crm && adduser -S crm -G crm && apk add --no-cache curl
+# Chromium for Playwright (LinkedIn bot) + curl for healthcheck
+RUN apk add --no-cache curl chromium chromium-chromedriver \
+    && addgroup -S crm && adduser -S crm -G crm
+
+# Tell playwright-core where the system Chromium lives
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
@@ -19,6 +23,7 @@ COPY logo.png     ./
 
 # Optional: jarvis tools (not needed at runtime, but nice to have)
 COPY jarvis_crm_tools.js ./
+COPY linkedin-bot.js     ./
 
 RUN chown -R crm:crm /app
 USER crm

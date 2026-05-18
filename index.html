@@ -6607,15 +6607,23 @@ function ColdOutreachView({campaigns, onUpdate}){
 
 // ─── LINKEDIN OUTREACH BOT VIEW ──────────────────────────────────────────────
 function LinkedInOutreachBot(){
-  const [status, setStatus] = React.useState('stopped');
+  const AUTH = {'Authorization': `Bearer ${window.WEBARS_API_TOKEN}`, 'Content-Type': 'application/json'};
+
+  const [botStatus, setBotStatus] = React.useState({status:'stopped', sentToday:0, totalSent:0});
+  const [log, setLog] = React.useState([]);
   const [config, setConfig] = React.useState({
-    zielgruppe: 'HVAC, Plumber, Electrician, Roofer — Owner/Founder — USA',
+    zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
     tagLimit: 20,
-    message: "I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+    message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
     cookies: '',
+    anthropicKey: '',
   });
-  const [cookieSaved, setCookieSaved] = React.useState(false);
-  const [log] = React.useState([]);
+  const [serverHasCookies, setServerHasCookies] = React.useState(false);
+  const [serverHasKey, setServerHasKey] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState('');
+  const [actionBusy, setActionBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
 
   const cookiesValid = React.useMemo(()=>{
     if(!config.cookies.trim()) return false;
@@ -6623,28 +6631,111 @@ function LinkedInOutreachBot(){
     catch{ return false; }
   }, [config.cookies]);
 
-  const saveCookies = () => { setCookieSaved(true); setTimeout(()=>setCookieSaved(false), 2000); };
+  // Initial load: config + status + log
+  React.useEffect(()=>{
+    fetch('/api/linkedin/config',{headers:AUTH}).then(r=>r.json()).then(d=>{
+      if(d.error) return;
+      setConfig(c=>({...c, zielgruppe:d.zielgruppe||c.zielgruppe, tagLimit:d.tagLimit||c.tagLimit, message:d.message||c.message}));
+      setServerHasCookies(!!d.hasCookies);
+      setServerHasKey(!!d.hasApiKey);
+    }).catch(()=>{});
+    fetchStatus();
+    fetchLog();
+  }, []);
+
+  // Polling while running
+  React.useEffect(()=>{
+    if(botStatus.status !== 'running') return;
+    const iv = setInterval(()=>{ fetchStatus(); fetchLog(); }, 6000);
+    return ()=>clearInterval(iv);
+  }, [botStatus.status]);
+
+  function fetchStatus(){
+    fetch('/api/linkedin/status',{headers:AUTH}).then(r=>r.json()).then(d=>{ if(!d.error) setBotStatus(d); }).catch(()=>{});
+  }
+  function fetchLog(){
+    fetch('/api/linkedin/log?limit=100',{headers:AUTH}).then(r=>r.json()).then(d=>{ if(d.log) setLog(d.log); }).catch(()=>{});
+  }
+
+  async function saveConfig(){
+    setSaving(true); setSaveMsg(''); setErr('');
+    try{
+      const body = {zielgruppe:config.zielgruppe, tagLimit:config.tagLimit, message:config.message};
+      if(config.cookies.trim()) body.cookies = config.cookies;
+      if(config.anthropicKey.trim()) body.anthropicKey = config.anthropicKey;
+      const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      setServerHasCookies(!!d.hasCookies);
+      setServerHasKey(!!d.hasApiKey);
+      setSaveMsg('✓ Gespeichert');
+      setTimeout(()=>setSaveMsg(''),2000);
+    }catch(e){ setErr(e.message); }
+    setSaving(false);
+  }
+
+  async function handleStart(){
+    setActionBusy(true); setErr('');
+    try{
+      // Config erst speichern damit Cookies + Key aktuell sind
+      await saveConfig();
+      const r = await fetch('/api/linkedin/start',{method:'POST',headers:AUTH,body:JSON.stringify({})});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      setBotStatus(s=>({...s,status:'running'}));
+      fetchLog();
+    }catch(e){ setErr(e.message); }
+    setActionBusy(false);
+  }
+
+  async function handleStop(){
+    setActionBusy(true);
+    try{
+      await fetch('/api/linkedin/stop',{method:'POST',headers:AUTH});
+      setBotStatus(s=>({...s,status:'stopped'}));
+      fetchStatus();
+    }catch(e){ setErr(e.message); }
+    setActionBusy(false);
+  }
+
+  const isRunning = botStatus.status === 'running';
+  const dotColor  = isRunning ? '#22c55e' : botStatus.status === 'error' ? '#ef4444' : '#d1d5db';
+
+  const levelColor = lvl => lvl==='success'?'#16a34a':lvl==='error'?'#ef4444':lvl==='warn'?'#d97706':'#A8A39D';
 
   return (
     <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
+
+      {/* Status-Bar */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px',display:'flex',alignItems:'center',gap:16}}>
-        <div style={{width:12,height:12,borderRadius:'50%',background:status==='running'?'#22c55e':'#d1d5db',flexShrink:0,boxShadow:status==='running'?'0 0 0 4px rgba(34,197,94,.2)':'none',transition:'all .3s'}}/>
+        <div style={{width:12,height:12,borderRadius:'50%',background:dotColor,flexShrink:0,boxShadow:isRunning?'0 0 0 4px rgba(34,197,94,.2)':'none',transition:'all .3s'}}/>
         <div style={{flex:1}}>
-          <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>{status==='running'?'Läuft — sendet Nachrichten':'Gestoppt'}</div>
-          <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>{status==='running'?'LinkedIn-Outreach aktiv':'Bereit zum Starten'}</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>
+            {isRunning?`Läuft — ${botStatus.sentToday} heute gesendet`:botStatus.status==='error'?'Fehler':' Gestoppt'}
+          </div>
+          <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>
+            {isRunning?'LinkedIn-Outreach aktiv':botStatus.lastError||`Gesamt: ${botStatus.totalSent||0} gesendet`}
+          </div>
         </div>
-        <button onClick={()=>setStatus(s=>s==='running'?'stopped':'running')} className={'btn btn-sm '+(status==='running'?'btn-danger':'btn-primary')}>{status==='running'?'Stop':'Start'}</button>
+        <button onClick={isRunning?handleStop:handleStart} disabled={actionBusy||(!serverHasCookies&&!cookiesValid)}
+          className={'btn btn-sm '+(isRunning?'btn-danger':'btn-primary')}>
+          {actionBusy?'…':isRunning?'Stop':'Start'}
+        </button>
       </div>
+
+      {err&&<div style={{background:'rgba(239,68,68,.08)',border:'1px solid rgba(239,68,68,.2)',borderRadius:10,padding:'10px 14px',fontSize:12,color:'#ef4444'}}>{err}</div>}
+
+      {/* Konfiguration */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
         <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Konfiguration</div>
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe</label>
-            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner, USA"/>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe (Suchbegriff)</label>
+            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner USA"/>
           </div>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Nachrichten pro Tag</label>
-            <input type="number" value={config.tagLimit} min={1} max={30} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))} style={{maxWidth:100}}/>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Anfragen pro Session</label>
+            <input type="number" value={config.tagLimit} min={1} max={50} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))} style={{maxWidth:100}}/>
             <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfehlung: max. 20–25 um Account-Sperren zu vermeiden</div>
           </div>
           <div>
@@ -6652,35 +6743,47 @@ function LinkedInOutreachBot(){
             <textarea value={config.message} onChange={e=>setConfig(c=>({...c,message:e.target.value.slice(0,300)}))} style={{minHeight:80,fontFamily:'inherit',resize:'vertical'}}/>
             <div style={{fontSize:11,color:config.message.length>280?'#ef4444':'#C0BBB5',marginTop:4,textAlign:'right'}}>{config.message.length}/300</div>
           </div>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
+              Anthropic API-Key {serverHasKey&&<span style={{color:'#22c55e',fontWeight:400}}>✓ gespeichert</span>}
+            </label>
+            <input type="password" value={config.anthropicKey} onChange={e=>setConfig(c=>({...c,anthropicKey:e.target.value}))}
+              placeholder={serverHasKey?'(aktuell gespeichert — neu eingeben zum Ändern)':'sk-ant-api03-...'}/>
+            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Für Haiku-Personalisierung (optional — ohne Key wird der Standard-Text verwendet)</div>
+          </div>
         </div>
       </div>
 
       {/* LinkedIn Session */}
-      <div style={{background:'white',borderRadius:14,border:`1px solid ${cookiesValid?'rgba(34,197,94,.3)':'rgba(0,0,0,.08)'}`,padding:'18px 22px'}}>
+      <div style={{background:'white',borderRadius:14,border:`1px solid ${(cookiesValid||serverHasCookies)?'rgba(34,197,94,.3)':'rgba(0,0,0,.08)'}`,padding:'18px 22px'}}>
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
           <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>LinkedIn Session</div>
-          {cookiesValid&&<span style={{fontSize:11,fontWeight:600,color:'#22c55e',background:'rgba(34,197,94,.1)',borderRadius:99,padding:'2px 8px'}}>✓ Cookies geladen</span>}
+          {serverHasCookies&&<span style={{fontSize:11,fontWeight:600,color:'#22c55e',background:'rgba(34,197,94,.1)',borderRadius:99,padding:'2px 8px'}}>✓ Cookies am Server</span>}
         </div>
         <div style={{fontSize:12,color:'#A8A39D',marginBottom:12,lineHeight:1.6}}>
-          Gehe auf <strong>linkedin.com</strong> → öffne <strong>Cookie-Editor</strong> → suche nach „linkedin" → klicke <strong>Export</strong> → füge das JSON hier ein.
+          Gehe auf <strong>linkedin.com</strong> → öffne <strong>Cookie-Editor</strong> → klicke <strong>Export as JSON</strong> → füge das JSON hier ein.
         </div>
-        <textarea
-          value={config.cookies}
-          onChange={e=>setConfig(c=>({...c,cookies:e.target.value}))}
+        <textarea value={config.cookies} onChange={e=>setConfig(c=>({...c,cookies:e.target.value}))}
           placeholder='[{"name":"li_at","value":"...","domain":".linkedin.com",...}]'
-          style={{minHeight:90,fontFamily:'monospace',fontSize:11,resize:'vertical',color:cookiesValid?'#16a34a':'inherit'}}
-        />
+          style={{minHeight:90,fontFamily:'monospace',fontSize:11,resize:'vertical',color:cookiesValid?'#16a34a':'inherit'}}/>
         {config.cookies.trim()&&!cookiesValid&&(
           <div style={{fontSize:11,color:'#ef4444',marginTop:4}}>⚠ Ungültiges JSON — bitte nochmal exportieren</div>
         )}
-        <div style={{display:'flex',justifyContent:'flex-end',marginTop:10}}>
-          <button className="btn btn-primary btn-sm" onClick={saveCookies} disabled={!cookiesValid}>
-            {cookieSaved?'✓ Gespeichert':'Session speichern'}
-          </button>
-        </div>
       </div>
+
+      {/* Speichern */}
+      <div style={{display:'flex',justifyContent:'flex-end',gap:10,alignItems:'center'}}>
+        {saveMsg&&<span style={{fontSize:12,color:'#22c55e',fontWeight:600}}>{saveMsg}</span>}
+        <button className="btn btn-primary btn-sm" onClick={saveConfig} disabled={saving}>{saving?'Speichert…':'Einstellungen speichern'}</button>
+      </div>
+
+      {/* Log */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
-        <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Aktivitäts-Log</div>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>Aktivitäts-Log</div>
+          {isRunning&&<div style={{fontSize:11,color:'#22c55e',fontWeight:600,animation:'pulse 1.5s infinite'}}>● Live</div>}
+          {log.length>0&&<button className="btn btn-ghost btn-sm" onClick={fetchLog}>Aktualisieren</button>}
+        </div>
         {log.length===0?(
           <div style={{textAlign:'center',padding:'40px 20px',color:'#C8C3BD'}}>
             <div style={{fontSize:32,marginBottom:10,opacity:.4}}>📋</div>
@@ -6688,12 +6791,12 @@ function LinkedInOutreachBot(){
             <div style={{fontSize:12,marginTop:4}}>Gesendete Connection Requests erscheinen hier</div>
           </div>
         ):(
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:400,overflowY:'auto'}}>
             {log.map((entry,i)=>(
-              <div key={i} style={{display:'flex',gap:12,padding:'8px 12px',background:'#F8F7F5',borderRadius:8,fontSize:12}}>
-                <span style={{color:'#A8A39D',flexShrink:0}}>{entry.time}</span>
-                <span style={{color:'#3F3A35',flex:1}}>{entry.name}</span>
-                <span style={{color:entry.ok?'#22c55e':'#ef4444'}}>{entry.ok?'✓ Gesendet':'✗ Fehler'}</span>
+              <div key={i} style={{display:'flex',gap:10,padding:'7px 10px',background:'#F8F7F5',borderRadius:8,fontSize:12,alignItems:'flex-start'}}>
+                <span style={{color:'#C0BBB5',flexShrink:0,fontFamily:'monospace',fontSize:11}}>{entry.ts ? entry.ts.slice(11,19) : ''}</span>
+                <span style={{color:levelColor(entry.level),flexShrink:0,fontWeight:600,width:48}}>{entry.level}</span>
+                <span style={{color:'#3F3A35',flex:1,lineHeight:1.5}}>{entry.msg}{entry.company?` · ${entry.company}`:''}</span>
               </div>
             ))}
           </div>

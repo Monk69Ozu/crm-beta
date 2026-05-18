@@ -1621,7 +1621,6 @@ app.get('/q/:token', async (req, res) => {
             <button onclick="doAccept()" id="btn-accept" disabled style="background:#141210;color:white;border:none;border-radius:10px;padding:14px 36px;font-size:15px;font-weight:700;cursor:default;letter-spacing:-.01em;opacity:.3;transition:all .2s;flex-shrink:0">Ja, ich will starten →</button>
             <button onclick="doDecline()" id="btn-decline" style="background:none;color:#B0ABA5;border:none;font-size:13px;font-weight:400;cursor:pointer;padding:4px 0;text-decoration:underline;text-underline-offset:3px">Kein Interesse</button>
           </div>
-          <div style="margin-top:16px;font-size:12px;color:#B0ABA5;line-height:1.5">Ihr Name dient als Bestätigung Ihrer Anfrage. Kein Risiko — Sie können jederzeit absagen, solange wir keinen Starttermin vereinbart haben.</div>
         </div>
       </div>
       <script>
@@ -1952,6 +1951,84 @@ async function initDbWithRetry() {
 // ── Process-level safety net ─────────────────────────────────────
 // Log instead of crash on unhandled rejections; same for uncaught exceptions
 // (we keep running because Coolify+/health will restart the container if it
+// ══════════════════════════════════════════════════════════════════
+//  LinkedIn Outreach Bot  (playwright-core + Claude Haiku)
+// ══════════════════════════════════════════════════════════════════
+
+let linkedinBot = null;
+let linkedinConfig = {
+  zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
+  tagLimit: 20,
+  message: "Hey {name}, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+  cookies: '',
+  anthropicKey: '',
+};
+
+function getLinkedinBot() {
+  if (!linkedinBot) {
+    try {
+      linkedinBot = require('./linkedin-bot.js');
+    } catch (e) {
+      return null;
+    }
+  }
+  return linkedinBot;
+}
+
+// GET /api/linkedin/status
+app.get('/api/linkedin/status', requireAuth, (req, res) => {
+  const bot = getLinkedinBot();
+  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+  res.json(bot.getStatus());
+});
+
+// GET /api/linkedin/log
+app.get('/api/linkedin/log', requireAuth, (req, res) => {
+  const bot = getLinkedinBot();
+  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+  res.json({ log: bot.getLog().slice(0, limit) });
+});
+
+// GET /api/linkedin/config
+app.get('/api/linkedin/config', requireAuth, (req, res) => {
+  // Cookies + API-Key nie zurückgeben
+  const { cookies, anthropicKey, ...safe } = linkedinConfig;
+  res.json({ ...safe, hasCookies: !!cookies, hasApiKey: !!anthropicKey });
+});
+
+// PUT /api/linkedin/config
+app.put('/api/linkedin/config', requireAuth, express.json(), (req, res) => {
+  const { zielgruppe, tagLimit, message, cookies, anthropicKey } = req.body || {};
+  if (zielgruppe !== undefined) linkedinConfig.zielgruppe = String(zielgruppe).slice(0, 500);
+  if (tagLimit !== undefined) linkedinConfig.tagLimit = Math.min(Math.max(parseInt(tagLimit) || 10, 1), 100);
+  if (message !== undefined) linkedinConfig.message = String(message).slice(0, 300);
+  if (cookies !== undefined) linkedinConfig.cookies = String(cookies).slice(0, 50000);
+  if (anthropicKey !== undefined) linkedinConfig.anthropicKey = String(anthropicKey).slice(0, 200);
+  const { cookies: _c, anthropicKey: _k, ...safe } = linkedinConfig;
+  res.json({ ok: true, ...safe, hasCookies: !!linkedinConfig.cookies, hasApiKey: !!linkedinConfig.anthropicKey });
+});
+
+// POST /api/linkedin/start
+app.post('/api/linkedin/start', requireAuth, express.json(), async (req, res) => {
+  const bot = getLinkedinBot();
+  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+  if (!linkedinConfig.cookies) return res.status(400).json({ error: 'Keine Cookies gespeichert' });
+  try {
+    const result = await bot.start(linkedinConfig);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// POST /api/linkedin/stop
+app.post('/api/linkedin/stop', requireAuth, (req, res) => {
+  const bot = getLinkedinBot();
+  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+  res.json(bot.stop());
+});
+
 // stops responding, but a single unhandled error mid-request shouldn't kill it).
 process.on('unhandledRejection', (reason) => {
   console.error('⚠ unhandledRejection:', reason && reason.stack || reason);
