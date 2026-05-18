@@ -1959,7 +1959,7 @@ let linkedinBot = null;
 let linkedinConfig = {
   zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
   tagLimit: 20,
-  message: "Hey {name}, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+  message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
   cookies: '',
   anthropicKey: '',
 };

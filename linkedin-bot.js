@@ -33,7 +33,10 @@ function addLog(level, msg, extra = {}) {
 
 // ── Haiku Personalisierung ─────────────────────────────────────────────────────
 async function personalizeMessage(profile, templateMsg, anthropicKey) {
-  if (!anthropicKey) return templateMsg;
+  // Immer {name} ersetzen — auch ohne Haiku-Key
+  const firstName = (profile.name || '').split(' ')[0];
+  const resolved = templateMsg.replace(/\{name\}/gi, firstName || 'there');
+  if (!anthropicKey) return resolved;
   try {
     const client = new Anthropic({ apiKey: anthropicKey });
     const prompt = `You are writing a short, casual LinkedIn connection request opener (1 sentence max, no emojis, very natural).
