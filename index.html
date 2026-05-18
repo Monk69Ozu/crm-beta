@@ -1250,7 +1250,7 @@ const DEFAULT_ONBOARDING_FORM = {
   published: false,
 };
 
-const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[],leads:[],coldCampaigns:[]};
+const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[],leads:[],coldCampaigns:[],visualizations:[]};
 
 const lbl = {display:'block',fontSize:11,fontWeight:600,color:'#A8A39D',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'};
 
@@ -8140,7 +8140,79 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
   );
 }
 
-function GamificationView({onLoadData, onReset}) {
+function VisualizationsView({items, onUpdate}) {
+  const [showAdd, setShowAdd] = React.useState(false);
+  const [form, setForm] = React.useState({name:'', url:'', note:''});
+  const uid = () => Math.random().toString(36).slice(2,10);
+
+  const save = () => {
+    if (!form.name.trim() || !form.url.trim()) return;
+    onUpdate([...items, {id: uid(), name: form.name.trim(), url: form.url.trim(), note: form.note.trim(), createdAt: new Date().toISOString()}]);
+    setForm({name:'', url:'', note:''});
+    setShowAdd(false);
+  };
+
+  return (
+    <div style={{flex:1, overflow:'auto', background:'#F3F0EB'}}>
+      <div style={{background:'white', borderBottom:'1px solid rgba(0,0,0,.07)', padding:'14px 28px', display:'flex', alignItems:'center', gap:14, flexShrink:0}}>
+        <div style={{flex:1}}>
+          <h1 style={{fontSize:18, fontWeight:800, letterSpacing:'-0.02em'}}>🖼️ Visualisierungen</h1>
+          <div style={{fontSize:12, color:'#B0ABA5', marginTop:2}}>{items.length} {items.length===1?'Board':'Boards'} verlinkt</div>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={()=>setShowAdd(true)}>+ Hinzufügen</button>
+      </div>
+
+      <div style={{padding:'24px 28px'}}>
+        {items.length === 0 && !showAdd && (
+          <div style={{textAlign:'center', padding:'60px 0', color:'#B0ABA5'}}>
+            <div style={{fontSize:40, marginBottom:12}}>🖼️</div>
+            <div style={{fontSize:15, fontWeight:600, color:'#6B6560', marginBottom:6}}>Noch keine Visualisierungen</div>
+            <div style={{fontSize:13, marginBottom:20}}>Figma-Boards, FigJam-Links oder andere URLs hier verlinken.</div>
+            <button className="btn btn-primary btn-sm" onClick={()=>setShowAdd(true)}>Ersten Link hinzufügen</button>
+          </div>
+        )}
+
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))', gap:16, marginBottom: showAdd?20:0}}>
+          {items.map(item => (
+            <div key={item.id} style={{background:'white', borderRadius:12, border:'1px solid rgba(0,0,0,.08)', padding:'18px 20px', display:'flex', flexDirection:'column', gap:10, position:'relative'}}>
+              <div style={{display:'flex', alignItems:'flex-start', gap:12}}>
+                <div style={{width:36, height:36, borderRadius:8, background:'#F3F0EB', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:18}}>
+                  {item.url.includes('figma.com/board') ? '🗂️' : item.url.includes('figma.com') ? '🎨' : '🔗'}
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontWeight:700, fontSize:14, color:'#141210', marginBottom:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{item.name}</div>
+                  <div style={{fontSize:11, color:'#B0ABA5', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{item.url}</div>
+                </div>
+              </div>
+              {item.note && <div style={{fontSize:12, color:'#6B6560', borderTop:'1px solid rgba(0,0,0,.06)', paddingTop:8}}>{item.note}</div>}
+              <div style={{display:'flex', gap:8, marginTop:4}}>
+                <a href={item.url} target="_blank" rel="noopener noreferrer" style={{flex:1, background:'#141210', color:'white', border:'none', borderRadius:8, padding:'8px 12px', fontSize:12, fontWeight:600, cursor:'pointer', textAlign:'center', textDecoration:'none', display:'block'}}>Öffnen →</a>
+                <button onClick={()=>onUpdate(items.filter(x=>x.id!==item.id))} style={{background:'transparent', border:'1px solid #FECACA', color:'#C0392B', borderRadius:8, padding:'8px 10px', fontSize:12, cursor:'pointer'}}>✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {showAdd && (
+          <div style={{background:'white', borderRadius:12, border:'1px solid rgba(0,0,0,.08)', padding:'20px 22px', maxWidth:480}}>
+            <div style={{fontWeight:700, fontSize:14, marginBottom:14}}>Neuen Link hinzufügen</div>
+            <div style={{display:'flex', flexDirection:'column', gap:10}}>
+              <input placeholder="Name (z.B. Cold Email Maschine)" value={form.name} onChange={e=>setForm(f=>({...f, name:e.target.value}))} style={{padding:'8px 12px', fontSize:13, border:'1.5px solid #E5E0DA', borderRadius:8, outline:'none'}}/>
+              <input placeholder="URL (Figma, FigJam, ...)" value={form.url} onChange={e=>setForm(f=>({...f, url:e.target.value}))} style={{padding:'8px 12px', fontSize:13, border:'1.5px solid #E5E0DA', borderRadius:8, outline:'none'}}/>
+              <input placeholder="Notiz (optional)" value={form.note} onChange={e=>setForm(f=>({...f, note:e.target.value}))} style={{padding:'8px 12px', fontSize:13, border:'1.5px solid #E5E0DA', borderRadius:8, outline:'none'}}/>
+              <div style={{display:'flex', gap:8}}>
+                <button className="btn btn-primary btn-sm" onClick={save} style={{flex:1}}>Speichern</button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>{setShowAdd(false);setForm({name:'',url:'',note:''});}}>Abbrechen</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GamificationView({onLoadData, onReset, onRescale}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -8417,6 +8489,7 @@ function GamificationView({onLoadData, onReset}) {
       <div style={{background:'white',borderRadius:12,overflow:'hidden',border:'1px solid rgba(16,185,129,.15)'}}>
         <div style={{padding:'12px 20px',borderBottom:'1px solid rgba(0,0,0,.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <span style={{fontSize:13,fontWeight:700,color:'#141210'}}>Verlauf</span>
+          <button onClick={async()=>{if(!window.confirm('EUR-Werte auf ÷5 korrigieren? (4.000€ → ~800€)\nTask-Anzahl bleibt unverändert.'))return;setResetting(true);try{await onRescale(0.2);await load();}finally{setResetting(false);}}} style={{background:'transparent',border:'1px solid #FEF08A',color:'#A16207',borderRadius:6,padding:'3px 10px',fontSize:11,cursor:'pointer'}}>EUR korrigieren (÷5)</button>
           <button onClick={async()=>{if(!window.confirm('Alle Gamification-Daten wirklich löschen?'))return;setResetting(true);try{await onReset();await load();}finally{setResetting(false);}}} style={{background:'transparent',border:'1px solid #D1FAE5',color:'#9CA3AF',borderRadius:6,padding:'3px 10px',fontSize:11,cursor:'pointer'}}>{resetting?'…':'Daten zurücksetzen'}</button>
         </div>
         {daily.length === 0 ? (
@@ -8557,6 +8630,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     })(),
     leads: initialData.leads || [],
     coldCampaigns: initialData.coldCampaigns || [],
+    visualizations: initialData.visualizations || [],
   }));
   const TODOS_VIEW = '__todos__';
   const AI_VIEW = '__ai__';
@@ -8569,6 +8643,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const LEADS_VIEW = '__leads__';
   const COLD_OUTREACH_VIEW = '__cold_outreach__';
   const GAMIFICATION_VIEW = '__gamification__';
+  const VISUALIZATIONS_VIEW = '__visualizations__';
   const [activeId,setActiveId]=useState((initialData.sections||DEFAULT_SECTIONS)[0]?.id);
   const [activeSubId,setActiveSubId]=useState(null);
   const [search,setSearch]=useState('');
@@ -8670,7 +8745,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     const fresh=await ghCheckForUpdates(cryptoKey);
     if(fresh){
       skipNextSaveRef.current=true;
-      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[], leads:fresh.leads||[], coldCampaigns:fresh.coldCampaigns||[]}));
+      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[], leads:fresh.leads||[], coldCampaigns:fresh.coldCampaigns||[], visualizations:fresh.visualizations||[]}));
       return true;
     }
     return false;
@@ -8866,6 +8941,15 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
               <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>🎮</span>
               <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Gamifikation</span>
+            </button>
+          );})()}
+          {(()=>{const isActive=activeId===VISUALIZATIONS_VIEW;const count=(state.visualizations||[]).length;return(
+            <button onClick={()=>setActiveId(VISUALIZATIONS_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>🖼️</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Visualisierungen</span>
+              {count>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
             </button>
           );})()}
           {(()=>{const inSales=state.sections.some(s=>s.id===activeId);const totalContacts=state.contacts.length;return(
@@ -9100,6 +9184,15 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               const resp=await fetch('/api/gamification',{method:'DELETE',headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
               if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             }}
+            onRescale={async (factor)=>{
+              const resp=await fetch(`/api/gamification/rescale?factor=${factor}`,{method:'POST',headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            }}
+          />
+        </>) : activeId === VISUALIZATIONS_VIEW ? (<>
+          <VisualizationsView
+            items={state.visualizations||[]}
+            onUpdate={visualizations=>upd({visualizations})}
           />
         </>) : activeId === INVOICES_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
@@ -9234,7 +9327,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
     {modal==='changePassword'&&<ChangePasswordModal cryptoKey={cryptoKey} onClose={()=>setModal(null)}/>}
-    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[],leads:data.leads||[],coldCampaigns:data.coldCampaigns||[]}));}} onClose={()=>setModal(null)}/>}
+    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[],leads:data.leads||[],coldCampaigns:data.coldCampaigns||[],visualizations:data.visualizations||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
       quote={editingQuote}

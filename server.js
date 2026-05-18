@@ -1394,6 +1394,17 @@ app.get('/api/gamification', requireAuth, async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/gamification/rescale — multiply all EUR values by a factor (corrects historical data)
+app.post('/api/gamification/rescale', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const factor = parseFloat(req.query.factor);
+  if (!factor || factor <= 0 || factor > 10) return res.status(400).json({ error: 'Invalid factor (0 < factor <= 10)' });
+  try {
+    await pool.query('UPDATE crm_gamification_daily SET eur = ROUND(eur * ?, 2)', [factor]);
+    res.json({ ok: true, factor });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /api/gamification — wipe all daily data (admin, for resets)
 app.delete('/api/gamification', requireAuth, async (_req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
