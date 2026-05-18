@@ -6612,8 +6612,18 @@ function LinkedInOutreachBot(){
     zielgruppe: 'HVAC, Plumber, Electrician, Roofer — Owner/Founder — USA',
     tagLimit: 20,
     message: "I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+    cookies: '',
   });
+  const [cookieSaved, setCookieSaved] = React.useState(false);
   const [log] = React.useState([]);
+
+  const cookiesValid = React.useMemo(()=>{
+    if(!config.cookies.trim()) return false;
+    try{ const p=JSON.parse(config.cookies); return Array.isArray(p)&&p.length>0; }
+    catch{ return false; }
+  }, [config.cookies]);
+
+  const saveCookies = () => { setCookieSaved(true); setTimeout(()=>setCookieSaved(false), 2000); };
 
   return (
     <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
@@ -6642,6 +6652,31 @@ function LinkedInOutreachBot(){
             <textarea value={config.message} onChange={e=>setConfig(c=>({...c,message:e.target.value.slice(0,300)}))} style={{minHeight:80,fontFamily:'inherit',resize:'vertical'}}/>
             <div style={{fontSize:11,color:config.message.length>280?'#ef4444':'#C0BBB5',marginTop:4,textAlign:'right'}}>{config.message.length}/300</div>
           </div>
+        </div>
+      </div>
+
+      {/* LinkedIn Session */}
+      <div style={{background:'white',borderRadius:14,border:`1px solid ${cookiesValid?'rgba(34,197,94,.3)':'rgba(0,0,0,.08)'}`,padding:'18px 22px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+          <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>LinkedIn Session</div>
+          {cookiesValid&&<span style={{fontSize:11,fontWeight:600,color:'#22c55e',background:'rgba(34,197,94,.1)',borderRadius:99,padding:'2px 8px'}}>✓ Cookies geladen</span>}
+        </div>
+        <div style={{fontSize:12,color:'#A8A39D',marginBottom:12,lineHeight:1.6}}>
+          Gehe auf <strong>linkedin.com</strong> → öffne <strong>Cookie-Editor</strong> → suche nach „linkedin" → klicke <strong>Export</strong> → füge das JSON hier ein.
+        </div>
+        <textarea
+          value={config.cookies}
+          onChange={e=>setConfig(c=>({...c,cookies:e.target.value}))}
+          placeholder='[{"name":"li_at","value":"...","domain":".linkedin.com",...}]'
+          style={{minHeight:90,fontFamily:'monospace',fontSize:11,resize:'vertical',color:cookiesValid?'#16a34a':'inherit'}}
+        />
+        {config.cookies.trim()&&!cookiesValid&&(
+          <div style={{fontSize:11,color:'#ef4444',marginTop:4}}>⚠ Ungültiges JSON — bitte nochmal exportieren</div>
+        )}
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:10}}>
+          <button className="btn btn-primary btn-sm" onClick={saveCookies} disabled={!cookiesValid}>
+            {cookieSaved?'✓ Gespeichert':'Session speichern'}
+          </button>
         </div>
       </div>
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
