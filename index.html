@@ -7935,13 +7935,21 @@ function GamificationView({onLoadData}) {
   if (error)   return <div style={{padding:'40px 28px',color:'#B45309'}}>Fehler: {error}</div>;
 
   const LEVELS = [
-    {min:0,   num:1, name:'Freelancer',  icon:'🧑‍💻', color:'#6B7280', bg:'#F3F4F6'},
-    {min:10,  num:2, name:'Aufsteiger',  icon:'🚀',    color:'#10B981', bg:'#ECFDF5'},
-    {min:25,  num:3, name:'Profi',       icon:'⚡',    color:'#3B82F6', bg:'#EFF6FF'},
-    {min:50,  num:4, name:'Expert',      icon:'🏆',    color:'#8B5CF6', bg:'#F5F3FF'},
-    {min:100, num:5, name:'Unternehmer', icon:'👑',    color:'#F59E0B', bg:'#FFFBEB'},
-    {min:200, num:6, name:'Visionaer',   icon:'💎',    color:'#06B6D4', bg:'#ECFEFF'},
-    {min:500, num:7, name:'CEO',         icon:'🌟',    color:'#059669', bg:'#ECFDF5'},
+    {min:0,    num:1,  name:'Einsteiger',    icon:'🌱', color:'#6B7280'},
+    {min:25,   num:2,  name:'Lehrling',      icon:'📚', color:'#10B981'},
+    {min:75,   num:3,  name:'Geselle',       icon:'🔧', color:'#14B8A6'},
+    {min:150,  num:4,  name:'Freelancer',    icon:'💻', color:'#3B82F6'},
+    {min:300,  num:5,  name:'Profi',         icon:'⚡', color:'#6366F1'},
+    {min:500,  num:6,  name:'Spezialist',    icon:'🎯', color:'#8B5CF6'},
+    {min:750,  num:7,  name:'Expert',        icon:'🏆', color:'#A855F7'},
+    {min:1000, num:8,  name:'Senior',        icon:'⭐', color:'#F59E0B'},
+    {min:1500, num:9,  name:'Meister',       icon:'👑', color:'#EAB308'},
+    {min:2000, num:10, name:'Unternehmer',   icon:'🚀', color:'#06B6D4'},
+    {min:3000, num:11, name:'Stratege',      icon:'🧠', color:'#0891B2'},
+    {min:5000, num:12, name:'Visionaer',     icon:'💎', color:'#059669'},
+    {min:7500, num:13, name:'Innovator',     icon:'🌟', color:'#10B981'},
+    {min:10000,num:14, name:'Marktfuehrer',  icon:'🔥', color:'#F97316'},
+    {min:15000,num:15, name:'Legende',       icon:'🌈', color:'#EC4899'},
   ];
 
   const daily = (data?.daily || []).slice().sort((a,b) => new Date(b.date)-new Date(a.date));

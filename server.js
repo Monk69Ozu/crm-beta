@@ -1353,6 +1353,15 @@ app.get('/api/gamification', requireAuth, async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// DELETE /api/gamification — wipe all daily data (admin, for resets)
+app.delete('/api/gamification', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    await pool.query('DELETE FROM crm_gamification_daily');
+    res.json({ ok: true, message: 'All gamification data deleted' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/gamification/init?key=API_SECRET — initialize gamification config (admin only)
 // Generates a new secret_key for PC overlay sync
 app.post('/api/gamification/init', requireAuth, async (req, res) => {
