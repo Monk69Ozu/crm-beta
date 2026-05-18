@@ -6382,7 +6382,12 @@ const COLD_STATUS = [
 function ColdOutreachView({campaigns, onUpdate}){
   const [showNew, setShowNew] = React.useState(false);
   const [form, setForm] = React.useState({name:'',zielgruppe:'',notizen:''});
-  const [detail, setDetail] = React.useState(null); // campaign id
+  const [detail, setDetail] = React.useState(null);
+  const fileInputRef = React.useRef(null);
+  const dropInputRef = React.useRef(null);
+
+  const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+  const fmtSize = b => b < 1024*1024 ? (b/1024).toFixed(0)+' KB' : (b/1024/1024).toFixed(1)+' MB';
 
   const save = () => {
     if(!form.name.trim()) return;
@@ -6393,35 +6398,35 @@ function ColdOutreachView({campaigns, onUpdate}){
     setDetail(c.id);
   };
 
-  const updateCamp = (id, patch) => onUpdate((campaigns||[]).map(c=>c.id===id?{...c,...patch}:c));
+  const updateCampStatus = (id, status) => onUpdate((campaigns||[]).map(c=>c.id===id?{...c,status}:c));
   const deleteCamp = (id) => { if(!confirm('Kampagne löschen?'))return; onUpdate((campaigns||[]).filter(c=>c.id!==id)); if(detail===id)setDetail(null); };
 
-  const addCSV = (campId, file) => {
+  const handleFile = (campId, file) => {
+    if(!file) return;
+    if(file.size > 10*1024*1024){ alert('CSV darf maximal 10 MB groß sein.'); return; }
     const reader = new FileReader();
     reader.onload = e => {
       const content = e.target.result;
       const lines = content.split('\n').filter(l=>l.trim());
       const count = Math.max(0, lines.length - 1);
-      const f = {id:uid(), name:file.name, size:file.size, count, uploadedAt:new Date().toISOString(), dataUrl:'data:text/csv;base64,'+btoa(unescape(encodeURIComponent(content)))};
-      updateCamp(campId, {csvFiles:[...((campaigns||[]).find(c=>c.id===campId)?.csvFiles||[]), f]});
+      const newFile = {id:uid(), name:file.name, size:file.size, count, uploadedAt:new Date().toISOString(), content};
+      onUpdate((campaigns||[]).map(c=>c.id===campId?{...c,csvFiles:[...(c.csvFiles||[]),newFile]}:c));
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'UTF-8');
   };
 
   const deleteCSV = (campId, fileId) => {
     if(!confirm('CSV-Datei entfernen?'))return;
-    updateCamp(campId, {csvFiles:((campaigns||[]).find(c=>c.id===campId)?.csvFiles||[]).filter(f=>f.id!==fileId)});
+    onUpdate((campaigns||[]).map(c=>c.id===campId?{...c,csvFiles:(c.csvFiles||[]).filter(f=>f.id!==fileId)}:c));
   };
 
   const downloadCSV = (f) => {
+    const blob = new Blob(['﻿'+(f.content||'')], {type:'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = f.dataUrl;
-    a.download = f.name;
-    a.click();
+    a.href = url; a.download = f.name; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
   };
-
-  const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
-  const fmtSize = b => b < 1024*1024 ? (b/1024).toFixed(0)+' KB' : (b/1024/1024).toFixed(1)+' MB';
 
   const activeCamp = detail ? (campaigns||[]).find(c=>c.id===detail) : null;
 
@@ -6433,36 +6438,37 @@ function ColdOutreachView({campaigns, onUpdate}){
           <span style={{fontWeight:700,fontSize:15}}>{activeCamp.name}</span>
           {activeCamp.zielgruppe&&<span style={{fontSize:12,color:'#A8A39D',marginLeft:10}}>{activeCamp.zielgruppe}</span>}
         </div>
-        <select value={activeCamp.status} onChange={e=>updateCamp(activeCamp.id,{status:e.target.value})}
+        <select value={activeCamp.status} onChange={e=>updateCampStatus(activeCamp.id,e.target.value)}
           style={{fontSize:12,padding:'5px 10px',borderRadius:7,border:'1.5px solid rgba(0,0,0,.12)',background:'white',cursor:'pointer',width:'auto'}}>
           {COLD_STATUS.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
         </select>
         <button className="btn btn-danger btn-sm" onClick={()=>deleteCamp(activeCamp.id)}>Löschen</button>
       </div>
       <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
-        {/* Notizen */}
         {(activeCamp.notizen||'').trim()&&(
           <div style={{background:'white',borderRadius:12,border:'1px solid rgba(0,0,0,.08)',padding:'16px 20px'}}>
             <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Notizen</div>
             <div style={{fontSize:13.5,color:'#3F3A35',lineHeight:1.6,whiteSpace:'pre-wrap'}}>{activeCamp.notizen}</div>
           </div>
         )}
-        {/* CSV Upload */}
         <div style={{background:'white',borderRadius:12,border:'1px solid rgba(0,0,0,.08)',padding:'16px 20px'}}>
           <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
             <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>CSV-Dateien</div>
-            <label style={{cursor:'pointer'}}>
-              <input type="file" accept=".csv" style={{display:'none'}} onChange={e=>{if(e.target.files[0])addCSV(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
-              <span className="btn btn-primary btn-sm">+ CSV hochladen</span>
-            </label>
+            <input ref={fileInputRef} type="file" accept=".csv" style={{display:'none'}}
+              onChange={e=>{handleFile(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
+            <button className="btn btn-primary btn-sm" onClick={()=>fileInputRef.current?.click()}>+ CSV hochladen</button>
           </div>
           {(activeCamp.csvFiles||[]).length===0?(
-            <label style={{display:'block',border:'2px dashed rgba(0,0,0,.12)',borderRadius:10,padding:'32px',textAlign:'center',cursor:'pointer',color:'#B0ABA5'}}>
-              <input type="file" accept=".csv" style={{display:'none'}} onChange={e=>{if(e.target.files[0])addCSV(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
+            <div onClick={()=>dropInputRef.current?.click()}
+              style={{border:'2px dashed rgba(0,0,0,.12)',borderRadius:10,padding:'32px',textAlign:'center',cursor:'pointer',color:'#B0ABA5'}}
+              onDragOver={e=>e.preventDefault()}
+              onDrop={e=>{e.preventDefault();handleFile(activeCamp.id,e.dataTransfer.files[0]);}}>
+              <input ref={dropInputRef} type="file" accept=".csv" style={{display:'none'}}
+                onChange={e=>{handleFile(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
               <div style={{fontSize:28,marginBottom:8,opacity:.4}}>📄</div>
               <div style={{fontSize:13,fontWeight:500}}>CSV hier ablegen oder klicken</div>
-              <div style={{fontSize:12,marginTop:4}}>Bereinigte Lead-Liste aus dem Apify-Export</div>
-            </label>
+              <div style={{fontSize:12,marginTop:4}}>Bereinigte Lead-Liste — max. 10 MB</div>
+            </div>
           ):(
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
               {(activeCamp.csvFiles||[]).map(f=>(
@@ -6470,7 +6476,7 @@ function ColdOutreachView({campaigns, onUpdate}){
                   <span style={{fontSize:16}}>📄</span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</div>
-                    <div style={{fontSize:11,color:'#A8A39D',marginTop:2}}>{f.count.toLocaleString('de-AT')} Leads · {fmtSize(f.size)} · Hochgeladen {fmtDate(f.uploadedAt)}</div>
+                    <div style={{fontSize:11,color:'#A8A39D',marginTop:2}}>{(f.count||0).toLocaleString('de-AT')} Leads · {fmtSize(f.size)} · {fmtDate(f.uploadedAt)}</div>
                   </div>
                   <button className="btn btn-ghost btn-sm" onClick={()=>downloadCSV(f)}>⬇ Download</button>
                   <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={()=>deleteCSV(activeCamp.id,f.id)}>✕</button>
@@ -6479,10 +6485,9 @@ function ColdOutreachView({campaigns, onUpdate}){
             </div>
           )}
         </div>
-        {/* Stats */}
         <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
           {[
-            {label:'Leads gesamt', value:(activeCamp.csvFiles||[]).reduce((s,f)=>s+f.count,0).toLocaleString('de-AT'), icon:'👥'},
+            {label:'Leads gesamt', value:(activeCamp.csvFiles||[]).reduce((s,f)=>s+(f.count||0),0).toLocaleString('de-AT'), icon:'👥'},
             {label:'CSV-Dateien',  value:(activeCamp.csvFiles||[]).length, icon:'📂'},
             {label:'Erstellt',     value:fmtDate(activeCamp.createdAt), icon:'📅'},
           ].map(s=>(
@@ -6538,7 +6543,7 @@ function ColdOutreachView({campaigns, onUpdate}){
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
             {(campaigns||[]).map(c=>{
               const st = COLD_STATUS.find(s=>s.id===c.status)||COLD_STATUS[0];
-              const totalLeads = (c.csvFiles||[]).reduce((s,f)=>s+f.count,0);
+              const totalLeads = (c.csvFiles||[]).reduce((s,f)=>s+(f.count||0),0);
               return(
                 <div key={c.id} onClick={()=>setDetail(c.id)}
                   style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',boxShadow:'0 1px 4px rgba(0,0,0,.05)',cursor:'pointer',overflow:'hidden',transition:'all .15s'}}
