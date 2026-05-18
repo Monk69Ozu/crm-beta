@@ -185,7 +185,12 @@ async function runBot(config) {
     browser = await chromium.launch({
       executablePath: CHROMIUM_PATH,
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
     botState.browser = browser;
 
@@ -196,6 +201,11 @@ async function runBot(config) {
     });
 
     page = await context.newPage();
+
+    // navigator.webdriver entfernen (LinkedIn prüft das aktiv)
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
     botState.page = page;
 
     await setupCookies(context, cookies);
