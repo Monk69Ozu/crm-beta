@@ -7930,50 +7930,159 @@ function GamificationView({onLoadData}) {
     })();
   }, [onLoadData]);
 
-  if (loading) {
-    return <div style={{padding: '40px 28px', textAlign: 'center', color: '#B0ABA5'}}>Laden...</div>;
-  }
+  if (loading) return <div style={{padding:'60px 28px',textAlign:'center',color:'#B0ABA5',fontSize:14}}>Laden...</div>;
+  if (error)   return <div style={{padding:'40px 28px',color:'#dc2626'}}>Fehler: {error}</div>;
 
-  if (error) {
-    return <div style={{padding: '40px 28px', color: '#dc2626'}}>Fehler: {error}</div>;
-  }
+  const LEVELS = [
+    {min:0,   num:1, name:'Freelancer',  color:'#6B7280', bg:'#F3F4F6', next:10},
+    {min:10,  num:2, name:'Aufsteiger',  color:'#2563EB', bg:'#EFF6FF', next:25},
+    {min:25,  num:3, name:'Profi',       color:'#7C3AED', bg:'#F5F3FF', next:50},
+    {min:50,  num:4, name:'Expert',      color:'#0891B2', bg:'#ECFEFF', next:100},
+    {min:100, num:5, name:'Unternehmer', color:'#D97706', bg:'#FFFBEB', next:200},
+    {min:200, num:6, name:'Visionaer',   color:'#DC2626', bg:'#FEF2F2', next:500},
+    {min:500, num:7, name:'CEO',         color:'#059669', bg:'#ECFDF5', next:null},
+  ];
 
-  const daily = (data?.daily || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const daily = (data?.daily || []).slice().sort((a,b) => new Date(b.date)-new Date(a.date));
+  const totalTasks = daily.reduce((s,d) => s+d.count, 0);
+  const totalEur   = daily.reduce((s,d) => s+Number(d.eur), 0);
+  const bestDay    = daily.reduce((best,d) => d.count > best.count ? d : best, {count:0,eur:0,date:''});
+
+  // Current month stats
+  const now = new Date();
+  const curMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const monthDays = daily.filter(d => d.date && d.date.startsWith(curMonth));
+  const monthTasks = monthDays.reduce((s,d) => s+d.count, 0);
+  const monthEur   = monthDays.reduce((s,d) => s+Number(d.eur), 0);
+
+  // Today
+  const todayStr = now.toISOString().split('T')[0];
+  const todayEntry = daily.find(d => d.date === todayStr) || {count:0, eur:0};
+
+  // Level
+  let curLevel = LEVELS[0];
+  for (const l of LEVELS) { if (totalTasks >= l.min) curLevel = l; }
+  const nextLevel = LEVELS.find(l => l.num === curLevel.num + 1);
+  const levelPct  = nextLevel ? Math.min(100, Math.round(((totalTasks - curLevel.min) / (nextLevel.min - curLevel.min)) * 100)) : 100;
+
+  // Last 7 days bar chart
+  const last7 = [];
+  for (let i=6; i>=0; i--) {
+    const d = new Date(now); d.setDate(d.getDate()-i);
+    const key = d.toISOString().split('T')[0];
+    const entry = daily.find(x => x.date === key) || {count:0,eur:0,date:key};
+    last7.push({...entry, date:key, label:['So','Mo','Di','Mi','Do','Fr','Sa'][d.getDay()]});
+  }
+  const maxCount = Math.max(...last7.map(d=>d.count), 1);
+
+  const StatCard = ({label, value, sub, color}) => (
+    <div style={{background:'white',borderRadius:12,padding:'18px 20px',border:'1px solid rgba(0,0,0,.07)',flex:1,minWidth:140}}>
+      <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',letterSpacing:'.04em',textTransform:'uppercase',marginBottom:6}}>{label}</div>
+      <div style={{fontSize:26,fontWeight:800,color:color||'#141210',letterSpacing:'-0.03em',lineHeight:1}}>{value}</div>
+      {sub && <div style={{fontSize:11,color:'#B0ABA5',marginTop:5}}>{sub}</div>}
+    </div>
+  );
+
+  const monthName = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'][now.getMonth()];
 
   return (
-    <div style={{flex: 1, overflow: 'auto', padding: '20px 28px'}}>
-      <div style={{marginBottom: 24}}>
-        <h2 style={{fontSize: 16, fontWeight: 700, marginBottom: 12}}>Tägliche Übersicht</h2>
-        {daily.length === 0 ? (
-          <div style={{color: '#B0ABA5', fontSize: 13}}>Noch keine Daten erfasst.</div>
-        ) : (
-          <div style={{background: '#F9F8F6', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,0,0,.07)'}}>
-            <table style={{width: '100%', borderCollapse: 'collapse'}}>
-              <thead>
-                <tr style={{borderBottom: '1px solid rgba(0,0,0,.07)', background: '#F3F0EB'}}>
-                  <th style={{padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>Datum</th>
-                  <th style={{padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>Tasks</th>
-                  <th style={{padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>EUR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {daily.map((entry, idx) => (
-                  <tr key={entry.date} style={{borderBottom: idx < daily.length - 1 ? '1px solid rgba(0,0,0,.05)' : 'none'}}>
-                    <td style={{padding: '12px 14px', fontSize: 13, color: '#0F0E0C'}}>
-                      {new Date(entry.date).toLocaleDateString('de-AT', {year: 'numeric', month: '2-digit', day: '2-digit'})}
-                    </td>
-                    <td style={{padding: '12px 14px', textAlign: 'right', fontSize: 13, color: '#0F0E0C', fontWeight: 600}}>{entry.count}</td>
-                    <td style={{padding: '12px 14px', textAlign: 'right', fontSize: 13, color: '#0F0E0C', fontWeight: 600}}>€ {Number(entry.eur).toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <div style={{flex:1,overflow:'auto',padding:'24px 28px',background:'#F7F5F2'}}>
+
+      {/* Level Hero */}
+      <div style={{background:`linear-gradient(135deg, ${curLevel.color}18 0%, ${curLevel.color}08 100%)`,border:`1.5px solid ${curLevel.color}30`,borderRadius:16,padding:'20px 24px',marginBottom:20,display:'flex',alignItems:'center',gap:20}}>
+        <div style={{width:64,height:64,borderRadius:'50%',background:curLevel.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,flexShrink:0,boxShadow:`0 4px 20px ${curLevel.color}50`}}>
+          {['','🧑‍💻','🚀','⚡','🏆','👑','🔥','🌟'][curLevel.num]}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:700,color:curLevel.color,letterSpacing:'.06em',textTransform:'uppercase'}}>Level {curLevel.num}</span>
+            <span style={{fontSize:18,fontWeight:800,color:'#141210'}}>{curLevel.name}</span>
           </div>
-        )}
+          {nextLevel ? (
+            <>
+              <div style={{height:8,background:'rgba(0,0,0,.08)',borderRadius:99,overflow:'hidden',marginBottom:4}}>
+                <div style={{height:'100%',width:`${levelPct}%`,background:curLevel.color,borderRadius:99,transition:'width .4s'}}/>
+              </div>
+              <div style={{fontSize:11,color:'#9CA3AF'}}>{totalTasks} / {nextLevel.min} Tasks bis <strong style={{color:curLevel.color}}>{nextLevel.name}</strong></div>
+            </>
+          ) : (
+            <div style={{fontSize:12,color:curLevel.color,fontWeight:600}}>Maximales Level erreicht!</div>
+          )}
+        </div>
+        <div style={{textAlign:'right',flexShrink:0}}>
+          <div style={{fontSize:28,fontWeight:900,color:curLevel.color,letterSpacing:'-0.03em'}}>€ {totalEur.toFixed(0)}</div>
+          <div style={{fontSize:11,color:'#A8A39D'}}>gesamt verdient</div>
+        </div>
       </div>
-      <div style={{fontSize: 12, color: '#A8A39D', marginTop: 20}}>
-        <p><strong>Wie das funktioniert:</strong></p>
-        <p>Das Overlay (PC-Benachrichtigung) sendet nach jedem erledigten Task automatisch die Daten hierher. Diese Tabelle zeigt die tägliche Zusammenfassung.</p>
+
+      {/* Stat Cards Row */}
+      <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
+        <StatCard label="Heute" value={todayEntry.count} sub={`€ ${Number(todayEntry.eur).toFixed(2)}`} color="#141210"/>
+        <StatCard label={monthName} value={monthTasks} sub={`€ ${monthEur.toFixed(2)}`} color="#2563EB"/>
+        <StatCard label="Bester Tag" value={bestDay.count||'–'} sub={bestDay.date ? new Date(bestDay.date).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit'}) : ''} color="#7C3AED"/>
+        <StatCard label="Gesamt Tasks" value={totalTasks} sub={`${LEVELS.map(l=>l.name).includes(curLevel.name)?curLevel.name:''}`} color="#059669"/>
+      </div>
+
+      {/* 7-Day Bar Chart */}
+      <div style={{background:'white',borderRadius:12,padding:'20px 24px',marginBottom:20,border:'1px solid rgba(0,0,0,.07)'}}>
+        <div style={{fontSize:13,fontWeight:700,color:'#141210',marginBottom:16}}>Letzte 7 Tage</div>
+        <div style={{display:'flex',gap:8,alignItems:'flex-end',height:100}}>
+          {last7.map((d,i) => {
+            const isToday = d.date === todayStr;
+            const pct = d.count / maxCount;
+            const barH = Math.max(pct * 80, d.count > 0 ? 8 : 2);
+            return (
+              <div key={d.date} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                {d.count > 0 && <div style={{fontSize:10,fontWeight:700,color:isToday?'#2563EB':'#6B7280'}}>{d.count}</div>}
+                <div style={{width:'100%',height:80,display:'flex',alignItems:'flex-end'}}>
+                  <div style={{width:'100%',height:barH,background:isToday?'#2563EB':d.count>0?'#93C5FD':'#E5E7EB',borderRadius:'4px 4px 2px 2px',transition:'height .3s'}}/>
+                </div>
+                <div style={{fontSize:11,fontWeight:isToday?700:400,color:isToday?'#2563EB':'#9CA3AF'}}>{d.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Daily Table */}
+      <div style={{background:'white',borderRadius:12,overflow:'hidden',border:'1px solid rgba(0,0,0,.07)'}}>
+        <div style={{padding:'14px 20px',borderBottom:'1px solid rgba(0,0,0,.06)',fontSize:13,fontWeight:700,color:'#141210'}}>Verlauf</div>
+        {daily.length === 0 ? (
+          <div style={{padding:'32px 20px',textAlign:'center',color:'#B0ABA5',fontSize:13}}>Noch keine Daten. Nach dem nächsten Task erscheinen sie hier.</div>
+        ) : (
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead>
+              <tr style={{background:'#F9F8F6'}}>
+                <th style={{padding:'10px 20px',textAlign:'left',fontSize:11,fontWeight:600,color:'#9CA3AF',letterSpacing:'.04em',textTransform:'uppercase'}}>Datum</th>
+                <th style={{padding:'10px 20px',textAlign:'right',fontSize:11,fontWeight:600,color:'#9CA3AF',letterSpacing:'.04em',textTransform:'uppercase'}}>Tasks</th>
+                <th style={{padding:'10px 20px',textAlign:'right',fontSize:11,fontWeight:600,color:'#9CA3AF',letterSpacing:'.04em',textTransform:'uppercase'}}>EUR</th>
+                <th style={{padding:'10px 20px',textAlign:'right',fontSize:11,fontWeight:600,color:'#9CA3AF',letterSpacing:'.04em',textTransform:'uppercase'}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {daily.map((entry,idx) => {
+                const isToday = entry.date === todayStr;
+                const isBest  = entry.count === bestDay.count && bestDay.count > 0;
+                const pct     = Math.min(100, Math.round((entry.count / (bestDay.count||1))*100));
+                return (
+                  <tr key={entry.date} style={{borderTop:'1px solid rgba(0,0,0,.05)',background:isToday?'#EFF6FF':'white'}}>
+                    <td style={{padding:'12px 20px',fontSize:13,color:'#141210',fontWeight:isToday?700:400}}>
+                      {isToday ? 'Heute' : new Date(entry.date).toLocaleDateString('de-AT',{weekday:'short',day:'2-digit',month:'2-digit'})}
+                      {isBest && <span style={{marginLeft:6,fontSize:10,background:'#FEF3C7',color:'#D97706',padding:'1px 6px',borderRadius:99,fontWeight:700}}>REKORD</span>}
+                    </td>
+                    <td style={{padding:'12px 20px',textAlign:'right',fontSize:13,fontWeight:700,color:isToday?'#2563EB':'#141210'}}>{entry.count}</td>
+                    <td style={{padding:'12px 20px',textAlign:'right',fontSize:13,fontWeight:600,color:'#059669'}}>€ {Number(entry.eur).toFixed(2)}</td>
+                    <td style={{padding:'12px 20px',width:100}}>
+                      <div style={{height:4,background:'#F3F4F6',borderRadius:99,overflow:'hidden'}}>
+                        <div style={{height:'100%',width:`${pct}%`,background:isToday?'#2563EB':'#93C5FD',borderRadius:99}}/>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
