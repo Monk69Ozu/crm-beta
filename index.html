@@ -6605,9 +6605,9 @@ function ColdOutreachView({campaigns, onUpdate}){
   );
 }
 
-// ─── LINKEDIN AUTOMATION VIEW ────────────────────────────────────────────────
-function LinkedInAutomationView(){
-  const [status, setStatus] = React.useState('stopped'); // 'stopped' | 'running'
+// ─── LINKEDIN OUTREACH BOT VIEW ──────────────────────────────────────────────
+function LinkedInOutreachBot(){
+  const [status, setStatus] = React.useState('stopped');
   const [config, setConfig] = React.useState({
     zielgruppe: 'HVAC, Plumber, Electrician, Roofer — Owner/Founder — USA',
     tagLimit: 20,
@@ -6617,52 +6617,40 @@ function LinkedInAutomationView(){
 
   return (
     <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
-      {/* Status Banner */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px',display:'flex',alignItems:'center',gap:16}}>
         <div style={{width:12,height:12,borderRadius:'50%',background:status==='running'?'#22c55e':'#d1d5db',flexShrink:0,boxShadow:status==='running'?'0 0 0 4px rgba(34,197,94,.2)':'none',transition:'all .3s'}}/>
         <div style={{flex:1}}>
           <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>{status==='running'?'Läuft — sendet Nachrichten':'Gestoppt'}</div>
           <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>{status==='running'?'LinkedIn-Outreach aktiv':'Bereit zum Starten'}</div>
         </div>
-        <button
-          onClick={()=>setStatus(s=>s==='running'?'stopped':'running')}
-          className={'btn btn-sm '+(status==='running'?'btn-danger':'btn-primary')}
-        >{status==='running'?'Stop':'Start'}</button>
+        <button onClick={()=>setStatus(s=>s==='running'?'stopped':'running')} className={'btn btn-sm '+(status==='running'?'btn-danger':'btn-primary')}>{status==='running'?'Stop':'Start'}</button>
       </div>
-
-      {/* Konfiguration */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
         <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Konfiguration</div>
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe</label>
-            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))}
-              placeholder="z.B. HVAC Owner, USA"/>
+            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner, USA"/>
           </div>
           <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Nachrichten pro Tag</label>
-            <input type="number" value={config.tagLimit} min={1} max={30}
-              onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))}
-              style={{maxWidth:100}}/>
+            <input type="number" value={config.tagLimit} min={1} max={30} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))} style={{maxWidth:100}}/>
             <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfehlung: max. 20–25 um Account-Sperren zu vermeiden</div>
           </div>
           <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Connection-Nachricht (max. 300 Zeichen)</label>
-            <textarea value={config.message} onChange={e=>setConfig(c=>({...c,message:e.target.value.slice(0,300)}))}
-              style={{minHeight:80,fontFamily:'inherit',resize:'vertical'}}/>
+            <textarea value={config.message} onChange={e=>setConfig(c=>({...c,message:e.target.value.slice(0,300)}))} style={{minHeight:80,fontFamily:'inherit',resize:'vertical'}}/>
             <div style={{fontSize:11,color:config.message.length>280?'#ef4444':'#C0BBB5',marginTop:4,textAlign:'right'}}>{config.message.length}/300</div>
           </div>
         </div>
       </div>
-
-      {/* Log */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
         <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Aktivitäts-Log</div>
         {log.length===0?(
           <div style={{textAlign:'center',padding:'40px 20px',color:'#C8C3BD'}}>
             <div style={{fontSize:32,marginBottom:10,opacity:.4}}>📋</div>
             <div style={{fontSize:13,fontWeight:500}}>Noch keine Aktivität</div>
-            <div style={{fontSize:12,marginTop:4}}>Gesendet Connection Requests erscheinen hier</div>
+            <div style={{fontSize:12,marginTop:4}}>Gesendete Connection Requests erscheinen hier</div>
           </div>
         ):(
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
@@ -6675,6 +6663,42 @@ function LinkedInAutomationView(){
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AUTOMATISIERUNG AUSWAHL ──────────────────────────────────────────────────
+function AutomatisierungView(){
+  const [subView, setSubView] = React.useState(null);
+
+  if(subView==='linkedin') return <LinkedInOutreachBot/>;
+
+  const cards = [
+    {id:'linkedin', icon:'💼', title:'LinkedIn Outreach', desc:'Automatisch Verbindungsanfragen\nund Follow-ups versenden', badge:null},
+    {id:'email',    icon:'📧', title:'Email Sequenz',     desc:'Cold-Email Kampagnen\nautomatisch versenden',          badge:'Demnächst'},
+    {id:'followup', icon:'🔔', title:'Follow-up Bot',     desc:'Offene Leads automatisch\nnachfassen',                  badge:'Demnächst'},
+  ];
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',flexShrink:0}}>
+        <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>⚡ Automatisierungen</h1>
+        <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>Wähle eine Automatisierung</div>
+      </div>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:40,gap:20,background:'#F8F7F5',flexWrap:'wrap'}}>
+        {cards.map(card=>(
+          <div key={card.id}
+            onClick={()=>{if(!card.badge)setSubView(card.id);}}
+            style={{background:'white',borderRadius:16,border:'1px solid rgba(0,0,0,.08)',boxShadow:'0 2px 8px rgba(0,0,0,.06)',cursor:card.badge?'default':'pointer',padding:'36px 28px',width:220,textAlign:'center',transition:'all .15s',opacity:card.badge?.9:1,position:'relative'}}
+            onMouseEnter={e=>{if(!card.badge){e.currentTarget.style.transform='translateY(-3px)';e.currentTarget.style.boxShadow='0 10px 28px rgba(0,0,0,.12)';}}}
+            onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)';e.currentTarget.style.boxShadow='0 2px 8px rgba(0,0,0,.06)';}}>
+            {card.badge&&<div style={{position:'absolute',top:14,right:14,fontSize:10,fontWeight:700,color:'#A8A39D',background:'#F0EDE8',borderRadius:99,padding:'2px 8px'}}>{card.badge}</div>}
+            <div style={{fontSize:40,marginBottom:14}}>{card.icon}</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#141210',marginBottom:8}}>{card.title}</div>
+            <div style={{fontSize:13,color:'#A8A39D',lineHeight:1.6,whiteSpace:'pre-line'}}>{card.desc}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -6728,11 +6752,11 @@ function ColdOutreachContainer({campaigns, onUpdate}){
       <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'10px 24px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
         <button className="btn btn-ghost btn-sm" onClick={()=>setSubView(null)}>← Zurück</button>
         <div style={{flex:1}}>
-          <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>🤖 LinkedIn Automatisierung</h1>
-          <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>LinkedIn Outreach — automatisiert mit KI</div>
+          <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>⚡ Automatisierungen</h1>
+          <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>Automatisierte Outreach-Tools</div>
         </div>
       </div>
-      <LinkedInAutomationView/>
+      <AutomatisierungView/>
     </div>
   );
 }
