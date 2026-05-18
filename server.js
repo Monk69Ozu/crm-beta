@@ -634,9 +634,39 @@ app.post('/api/backups/:id/restore', requireAuth, async (req, res) => {
 //  - POST /api/reset-token/:t/confirm       : commits new wrapped_master + marks used
 // ══════════════════════════════════════════════════════════════════
 
+// ── Brute-force protection for /api/auth-blob ────────────────────
+// Max 5 fetches per IP per 15 minutes. Purely server-side — no client cooperation needed.
+const AUTH_BLOB_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const AUTH_BLOB_MAX       = 5;
+const authBlobHits        = new Map(); // ip → { count, windowStart }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of authBlobHits) {
+    if (now - rec.windowStart > AUTH_BLOB_WINDOW_MS) authBlobHits.delete(ip);
+  }
+}, 60 * 1000); // cleanup every minute
+
+function checkAuthBlobLimit(req, res, next) {
+  const ip  = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  let rec   = authBlobHits.get(ip);
+  if (!rec || now - rec.windowStart > AUTH_BLOB_WINDOW_MS) {
+    rec = { count: 0, windowStart: now };
+  }
+  rec.count++;
+  authBlobHits.set(ip, rec);
+  if (rec.count > AUTH_BLOB_MAX) {
+    const retryAfter = Math.ceil((AUTH_BLOB_WINDOW_MS - (now - rec.windowStart)) / 1000);
+    res.set('Retry-After', retryAfter);
+    return res.status(429).json({ error: 'Zu viele Versuche. Bitte warte einige Minuten.', retryAfter });
+  }
+  next();
+}
+
 // GET — public so the login form can fetch salt before user has any credentials.
 // Returns {exists:false} if no auth has been set up yet. NEVER returns escrow.
-app.get('/api/auth-blob', async (_req, res) => {
+app.get('/api/auth-blob', checkAuthBlobLimit, async (_req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query('SELECT salt, wrapped_master, pbkdf2_iter FROM crm_auth WHERE id = 1');

@@ -169,10 +169,15 @@ async function fetchServerAuthBlob() {
   if (!SELF_HOSTED) return null;
   try {
     const r = await fetch('/api/auth-blob', { cache: 'no-store' });
+    if (r.status === 429) {
+      const j = await r.json().catch(() => ({}));
+      const mins = j.retryAfter ? Math.ceil(j.retryAfter / 60) : 15;
+      throw new Error('RATE_LIMITED:Zu viele Login-Versuche. Bitte ' + mins + ' Minuten warten.');
+    }
     if (!r.ok) return null;
     const j = await r.json();
     return j && j.exists ? j : { exists: false };
-  } catch(e) { console.warn('fetchServerAuthBlob:', e.message); return null; }
+  } catch(e) { console.warn('fetchServerAuthBlob:', e.message); throw e; }
 }
 
 async function serverHasAuth() {
@@ -1381,9 +1386,12 @@ function AuthScreen({mode, onDone, onSwitchMode, onForgotPassword}) {
         onDone(key, data || DEFAULT_STATE, OWNER_EMAIL);
       }
     } catch(e) {
-      if (e && /AUTH_ALREADY_EXISTS/.test(e.message||'')) {
+      const msg = e?.message || '';
+      if (/AUTH_ALREADY_EXISTS/.test(msg)) {
         setErr('Es existiert bereits ein Konto am Server. Bitte stattdessen anmelden.');
         if (onSwitchMode) setTimeout(onSwitchMode, 1500);
+      } else if (msg.startsWith('RATE_LIMITED:')) {
+        setErr(msg.replace('RATE_LIMITED:', ''));
       } else {
         setErr('Fehler. Bitte erneut versuchen.');
       }
