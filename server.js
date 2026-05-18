@@ -1566,32 +1566,49 @@ app.get('/q/:token', async (req, res) => {
   const quote = typeof rows[0].quote_json === 'string' ? JSON.parse(rows[0].quote_json) : rows[0].quote_json;
   const status = rows[0].status;
   const token = req.params.token;
-  const fmtDate = d => { if(!d) return '—'; const p = d.slice(0,10).split('-'); return `${p[2]}.${p[1]}.${p[0]}`; };
+  const fmtDate = d => { if(!d) return '—'; try { return new Date(d).toLocaleDateString('de-AT',{day:'2-digit',month:'long',year:'numeric'}); } catch(e){ const p=d.slice(0,10).split('-'); return `${p[2]}.${p[1]}.${p[0]}`; } };
   const fmtMoney = n => Number(n||0).toLocaleString('de-AT', {minimumFractionDigits:2,maximumFractionDigits:2}) + ' €';
-  const items = (quote.items||[]).filter(i=>i.type!=='heading');
-  const subtotal = items.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.unitPrice)||0),0);
-  const tax = subtotal * (Number(quote.taxRate)||0)/100;
-  const total = subtotal + tax;
-  const itemsHtml = (quote.items||[]).map(it => {
-    if(it.type==='heading') return `<tr><td colspan="4" style="padding:18px 0 6px;font-weight:700;font-size:13px;color:#6B6560;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #E8E3DC">${it.description||''}</td></tr>`;
-    const amt = (Number(it.quantity)||0)*(Number(it.unitPrice)||0);
-    const descLines = (it.description||'').split('\n');
-    return `<tr style="border-bottom:1px solid #F0EDE8">
-      <td style="padding:14px 0;vertical-align:top">
-        <div style="font-weight:600;color:#1A1714;font-size:14px">${descLines[0]||''}</div>
-        ${descLines.slice(1).map(l=>`<div style="font-size:12.5px;color:#8A8480;margin-top:3px">${l}</div>`).join('')}
-      </td>
-      <td style="padding:14px 16px;text-align:center;color:#6B6560;font-size:13px;white-space:nowrap;vertical-align:top">${Number(it.unitPrice)>0?fmtMoney(it.unitPrice):''}</td>
-      <td style="padding:14px 8px;text-align:center;color:#6B6560;font-size:13px;vertical-align:top">${Number(it.unitPrice)>0?'×'+it.quantity:''}</td>
-      <td style="padding:14px 0;text-align:right;font-weight:600;color:#1A1714;font-size:14px;white-space:nowrap;vertical-align:top">${Number(it.unitPrice)>0?fmtMoney(amt):'Inklusive'}</td>
-    </tr>`;
-  }).join('');
+  const accent = '#141210';
+  const lineItems = (quote.items||[]).filter(i=>i.type!=='heading');
+  const subtotal = lineItems.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.unitPrice)||0),0);
+  const discountAmt = subtotal * (Number(quote.discount)||0)/100;
+  const afterDiscount = subtotal - discountAmt;
+  const tax = afterDiscount * (Number(quote.taxRate)||0)/100;
+  const total = afterDiscount + tax;
+
+  // Group items by heading sections
+  const sections = [];
+  let curSec = {heading:null, items:[]};
+  (quote.items||[]).forEach(it => {
+    if(it.type==='heading'){ if(curSec.items.length||curSec.heading) sections.push(curSec); curSec={heading:it.description,items:[]}; }
+    else curSec.items.push(it);
+  });
+  if(curSec.items.length||curSec.heading) sections.push(curSec);
+
+  const sectionsHtml = sections.map(sec => `
+    <div style="margin-bottom:20px">
+      ${sec.heading ? `<div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:10px;padding-bottom:6px;border-bottom:1.5px solid ${accent};letter-spacing:-0.005em">${sec.heading}</div>` : ''}
+      ${sec.items.map((it,idx) => {
+        const lineTotal = (Number(it.quantity)||0)*(Number(it.unitPrice)||0);
+        const descLines = (it.description||'').split('\n');
+        return `<div style="display:flex;gap:20px;padding:11px 0;${idx>0?'border-top:0.5px solid #EFEBE6;':''}align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13.5px;color:#1F1B17;line-height:1.5;font-weight:500">${descLines[0]||''}</div>
+            ${descLines.slice(1).map(l=>`<div style="font-size:12px;color:#7A7570;margin-top:2px">${l}</div>`).join('')}
+            ${Number(it.quantity)>1?`<div style="font-size:11.5px;color:#7A7570;margin-top:4px">${it.quantity} × ${fmtMoney(it.unitPrice)}</div>`:''}
+          </div>
+          <div style="font-size:13.5px;font-weight:600;color:#1F1B17;white-space:nowrap;min-width:80px;text-align:right">${Number(it.unitPrice)>0?fmtMoney(lineTotal):'Inklusive'}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
   const alreadyAccepted = status === 'accepted';
   const alreadyDeclined = status === 'declined';
+
   const actionBar = alreadyAccepted
-    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:14px;padding:28px 32px;text-align:center;margin-top:32px"><div style="font-size:32px;margin-bottom:10px">🎉</div><div style="font-weight:800;color:#16a34a;font-size:19px;margin-bottom:8px">Perfekt — wir legen los!</div><div style="color:#5F5A55;font-size:14px;line-height:1.7">Vielen Dank für Ihr Vertrauen!<br>Wir melden uns in Kürze, um gemeinsam Ihren Starttermin festzulegen.<br><span style="color:#9A9490;font-size:13px">Keine Zahlung jetzt — erst nach Starttermin-Bestätigung.</span></div></div>`
+    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:14px;padding:28px 32px;text-align:center;margin-top:40px"><div style="font-size:32px;margin-bottom:10px">🎉</div><div style="font-weight:800;color:#16a34a;font-size:19px;margin-bottom:8px">Perfekt — wir legen los!</div><div style="color:#5F5A55;font-size:14px;line-height:1.7">Vielen Dank für Ihr Vertrauen!<br>Wir melden uns in Kürze, um gemeinsam Ihren Starttermin festzulegen.<br><span style="color:#9A9490;font-size:13px">Keine Zahlung jetzt — erst nach Starttermin-Bestätigung.</span></div></div>`
     : alreadyDeclined
-    ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-weight:700;color:#dc2626;font-size:16px">Angebot abgelehnt</div></div>`
+    ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:12px;padding:20px 24px;text-align:center;margin-top:40px"><div style="font-weight:700;color:#dc2626;font-size:16px">Angebot abgelehnt</div></div>`
     : `<div style="margin-top:40px" id="action-area">
         <div style="background:linear-gradient(135deg,#F8F5F0 0%,#F3EFE8 100%);border:1.5px solid #E8E3DC;border-radius:16px;padding:28px 32px">
           <div style="display:inline-block;background:#EAF5EA;color:#16a34a;font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;margin-bottom:14px;letter-spacing:.04em">Keine Zahlung jetzt</div>
@@ -1608,84 +1625,115 @@ app.get('/q/:token', async (req, res) => {
         </div>
       </div>
       <script>
-      function checkReady(){
-        const ok=document.getElementById('signer-name').value.trim().length>1;
-        const btn=document.getElementById('btn-accept');
-        btn.disabled=!ok;btn.style.opacity=ok?'1':'.3';btn.style.cursor=ok?'pointer':'default';
-        if(ok){btn.style.transform='scale(1.01)';}else{btn.style.transform='scale(1)';}
-      }
-      async function doAccept(){
-        const name=document.getElementById('signer-name').value.trim();
-        if(!name)return;
-        document.getElementById('btn-accept').textContent='…';
-        document.getElementById('btn-accept').disabled=true;document.getElementById('btn-accept').style.opacity='.6';
-        document.getElementById('btn-decline').style.display='none';
-        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept',name})});
-        const j=await r.json();
-        if(j.ok){location.reload();}else{document.getElementById('btn-accept').textContent='Ja, ich will starten →';document.getElementById('btn-accept').disabled=false;document.getElementById('btn-accept').style.opacity='1';document.getElementById('btn-decline').style.display='';alert('Fehler: '+j.error);}
-      }
-      async function doDecline(){
-        if(!confirm('Schade! Möchten Sie das Angebot wirklich ablehnen?'))return;
-        document.getElementById('btn-decline').style.opacity='.4';
-        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'decline'})});
-        const j=await r.json();
-        if(j.ok){location.reload();}else{document.getElementById('btn-decline').style.opacity='1';alert('Fehler: '+j.error);}
-      }
+      function checkReady(){var ok=document.getElementById('signer-name').value.trim().length>1;var btn=document.getElementById('btn-accept');btn.disabled=!ok;btn.style.opacity=ok?'1':'.3';btn.style.cursor=ok?'pointer':'default';}
+      async function doAccept(){var name=document.getElementById('signer-name').value.trim();if(!name)return;document.getElementById('btn-accept').textContent='…';document.getElementById('btn-accept').disabled=true;document.getElementById('btn-accept').style.opacity='.6';document.getElementById('btn-decline').style.display='none';var r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept',name:name})});var j=await r.json();if(j.ok){location.reload();}else{document.getElementById('btn-accept').textContent='Ja, ich will starten →';document.getElementById('btn-accept').disabled=false;document.getElementById('btn-accept').style.opacity='1';document.getElementById('btn-decline').style.display='';alert('Fehler: '+j.error);}}
+      async function doDecline(){if(!confirm('Schade! Möchten Sie das Angebot wirklich ablehnen?'))return;document.getElementById('btn-decline').style.opacity='.4';var r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'decline'})});var j=await r.json();if(j.ok){location.reload();}else{document.getElementById('btn-decline').style.opacity='1';alert('Fehler: '+j.error);}}
       </script>`;
+
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Angebot ${quote.number||''} · WebArs</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#F8F5F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1A1714;-webkit-font-smoothing:antialiased}a{color:inherit}
-.wrap{max-width:720px;margin:0 auto;padding:40px 20px 80px}
-.card{background:white;border-radius:16px;padding:40px 44px;box-shadow:0 2px 16px rgba(0,0,0,.06)}
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:36px;gap:16px;flex-wrap:wrap}
-.logo{font-size:20px;font-weight:800;letter-spacing:-.03em;color:#141210}
-.badge{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;padding:5px 12px;border-radius:20px;white-space:nowrap}
-.badge-draft{background:#F0EDE8;color:#9A9490}
-.badge-sent{background:#EFF6FF;color:#1d4ed8}
-.badge-accepted{background:#F0FDF4;color:#16a34a}
-.eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#B0ABA5;margin-bottom:6px}
-.quote-title{font-size:26px;font-weight:800;letter-spacing:-.02em;color:#141210;line-height:1.15;margin-bottom:4px}
-.meta{font-size:13px;color:#9A9490}
-.section{margin-top:32px}
-.intro-text{font-size:14.5px;color:#5F5A55;line-height:1.7;white-space:pre-wrap}
-table{width:100%;border-collapse:collapse}
-.totals td{padding:6px 0;font-size:13.5px;color:#6B6560}
-.totals .total-row td{padding-top:14px;font-size:17px;font-weight:800;color:#141210;border-top:2px solid #1A1714}
-.terms-text{font-size:13px;color:#8A8480;line-height:1.65;white-space:pre-wrap}
-.steps{list-style:none;counter-reset:steps}
-.steps li{counter-increment:steps;display:flex;gap:14px;margin-bottom:14px;font-size:13.5px;color:#5F5A55;line-height:1.55}
-.steps li::before{content:counter(steps);background:#F0EDE8;color:#6B6560;font-weight:700;font-size:11px;min-width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
-.footer-note{text-align:center;font-size:13px;color:#B0ABA5;margin-top:40px;line-height:1.6}
-@media(max-width:500px){.card{padding:28px 20px}.header{gap:10px}}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#F5F3EF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1A1714;-webkit-font-smoothing:antialiased}
+.paper{max-width:720px;margin:0 auto;padding:0 16px 80px}
+.banner{width:100%;height:220px;background:#0F0E0C;position:relative;overflow:hidden;margin-bottom:0}
+.banner svg{position:absolute;inset:0;width:100%;height:100%}
+.banner-num{position:absolute;bottom:18px;left:28px}
+.banner-num .eyebrow{font-size:9px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:3px}
+.banner-num .num{font-size:11px;color:white;font-family:monospace;font-weight:600;letter-spacing:.04em}
+.banner-badge{position:absolute;bottom:18px;right:28px;font-size:10px;font-weight:700;color:white;background:rgba(255,255,255,.15);padding:3px 10px;border-radius:99px;letter-spacing:.06em}
+.card{background:white;border-radius:0 0 16px 16px;padding:36px 40px 40px;box-shadow:0 4px 24px rgba(0,0,0,.07)}
+.brand-row{display:flex;justify-content:space-between;align-items:baseline;padding-bottom:10px;border-bottom:.5px solid #E5E1DC;margin-bottom:28px}
+.brand{font-weight:700;font-size:16px;color:#141210;letter-spacing:-.01em}
+.website{font-size:12px;color:#9A9590}
+.label{font-size:9px;color:#9A9590;text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:5px}
+.client-name{font-size:36px;font-weight:800;color:#141210;letter-spacing:-.03em;line-height:1;margin:0 0 20px 0}
+.project-block{border-top:2px solid #141210;padding-top:10px;margin-bottom:28px}
+.project-title{font-size:20px;font-weight:700;color:#141210;letter-spacing:-.01em;line-height:1.3}
+.meta-strip{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1.5px solid #141210;margin-bottom:32px}
+.meta-cell{flex:1;padding:10px 16px;border-right:1px solid #141210}
+.meta-cell:last-child{border-right:none;background:#141210;flex:1.5}
+.meta-cell .meta-label{font-size:8px;color:#9A9590;text-transform:uppercase;letter-spacing:.14em;font-weight:700;margin-bottom:4px}
+.meta-cell:last-child .meta-label{color:rgba(255,255,255,.6)}
+.meta-cell .meta-value{font-size:13px;font-weight:700;color:#141210}
+.meta-cell:last-child .meta-value{font-size:17px;font-weight:800;color:white;letter-spacing:-.02em}
+.section{margin-bottom:28px}
+.section-heading{display:flex;align-items:baseline;gap:8px;margin-bottom:12px}
+.section-num{font-size:9px;color:#141210;text-transform:uppercase;letter-spacing:.16em;font-weight:700}
+.section-title{font-size:15px;font-weight:700;color:#141210;letter-spacing:-.01em}
+.intro{font-size:13.5px;color:#2F2A25;line-height:1.7;white-space:pre-line}
+.items-block{background:#FAFAF8;border-radius:10px;padding:20px 24px}
+.invest-block{background:#FAFAF8;border-radius:10px;padding:20px 24px;border-left:3px solid #141210}
+.invest-grid{display:grid;grid-template-columns:1fr auto;gap:6px 20px;font-size:12.5px;margin-bottom:12px}
+.invest-grid .ig-label{color:#5F5A55}
+.invest-grid .ig-val{text-align:right;font-variant-numeric:tabular-nums}
+.invest-total{border-top:1.5px solid #141210;padding-top:10px;display:flex;justify-content:space-between;align-items:baseline}
+.invest-total-label{font-size:13px;font-weight:700;color:#141210}
+.invest-total-val{font-size:22px;font-weight:800;color:#141210;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.steps-list{list-style:none}
+.steps-list li{display:flex;gap:14px;margin-bottom:12px;align-items:flex-start;font-size:13.5px;color:#2F2A25;line-height:1.6}
+.steps-list li .step-num{min-width:26px;height:26px;background:#F0EDE8;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#6B6560;flex-shrink:0;margin-top:1px}
+.terms-box{background:#FAFAF8;border-radius:8px;padding:14px 18px;font-size:11.5px;color:#5F5A55;white-space:pre-line;line-height:1.6;margin-bottom:20px}
+.company-footer{padding-top:14px;border-top:.5px solid #E5E1DC;display:flex;gap:20px;font-size:10px;color:#9A9590;line-height:1.6}
+.company-footer .cf-col{flex:1}
+.company-footer .cf-label{font-weight:600;color:#5F5A55;margin-bottom:2px}
+@media(max-width:500px){.card{padding:24px 20px}.client-name{font-size:28px}.banner{height:160px}}
 </style></head><body>
-<div class="wrap">
+<div class="paper">
+  <div class="banner">
+    <svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <rect width="720" height="220" fill="#0F0E0C"/>
+      <path d="M0,110 C120,60 240,160 360,110 C480,60 600,160 720,110 L720,220 L0,220 Z" fill="rgba(255,255,255,0.035)"/>
+      <path d="M0,150 C180,90 360,190 540,130 C630,105 690,145 720,125 L720,220 L0,220 Z" fill="rgba(255,255,255,0.025)"/>
+      <path d="M0,70 C90,120 210,40 360,80 C510,120 630,55 720,90 L720,0 L0,0 Z" fill="rgba(255,255,255,0.02)"/>
+    </svg>
+    <div class="banner-num">
+      <div class="eyebrow">Angebot</div>
+      <div class="num">${quote.number||''}</div>
+    </div>
+    <div class="banner-badge">${alreadyAccepted?'✓ Angenommen':alreadyDeclined?'Abgelehnt':'Angebot'}</div>
+  </div>
   <div class="card">
-    <div class="header">
-      <div class="logo">WebArs</div>
-      <span class="badge ${alreadyAccepted?'badge-accepted':status==='declined'?'badge-draft':'badge-sent'}">${alreadyAccepted?'✓ Angenommen':alreadyDeclined?'Abgelehnt':'Angebot'}</span>
+    <div class="brand-row">
+      <div class="brand">WebArs</div>
+      <div class="website">webars.at</div>
     </div>
-    <div class="eyebrow">Angebot ${quote.number||''}</div>
-    <div class="quote-title">${quote.title||'Angebot'}</div>
-    <div class="meta" style="margin-top:8px">Für: <strong>${quote.contactSnapshot?.firma||''}</strong> · Datum: ${fmtDate(quote.date)} · Gültig bis: <strong>${fmtDate(quote.validUntil)}</strong></div>
-    ${quote.intro ? `<div class="section"><div class="intro-text">${quote.intro}</div></div>` : ''}
+    <div class="label">Für</div>
+    <h1 class="client-name">${quote.contactSnapshot?.firma||'—'}</h1>
+    ${quote.title?`<div class="project-block"><div class="label">Projekt</div><div class="project-title">${quote.title}</div></div>`:''}
+    <div class="meta-strip">
+      <div class="meta-cell"><div class="meta-label">Datum</div><div class="meta-value">${fmtDate(quote.date)}</div></div>
+      <div class="meta-cell"><div class="meta-label">Gültig bis</div><div class="meta-value">${fmtDate(quote.validUntil)}</div></div>
+      <div class="meta-cell"><div class="meta-label">Investition</div><div class="meta-value">${fmtMoney(total)}</div></div>
+    </div>
+    ${quote.intro?`<div class="section"><div class="intro">${quote.intro}</div></div>`:''}
     <div class="section">
-      <table>
-        <thead><tr style="border-bottom:2px solid #1A1714"><th style="text-align:left;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Leistung</th><th style="text-align:center;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700;white-space:nowrap">Einzel</th><th style="text-align:center;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Menge</th><th style="text-align:right;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Gesamt</th></tr></thead>
-        <tbody>${itemsHtml}</tbody>
-      </table>
-      <table class="totals" style="margin-top:16px">
-        <tr><td>Nettobetrag</td><td style="text-align:right">${fmtMoney(subtotal)}</td></tr>
-        ${Number(quote.taxRate)>0?`<tr><td>USt ${quote.taxRate}%</td><td style="text-align:right">${fmtMoney(tax)}</td></tr>`:''}
-        <tr class="total-row"><td>Gesamtbetrag</td><td style="text-align:right">${fmtMoney(total)}</td></tr>
-      </table>
+      <div class="section-heading"><span class="section-num">01</span><span class="section-title">Was wir leisten</span></div>
+      <div class="items-block">${sectionsHtml}</div>
     </div>
-    ${quote.notes ? `<div class="section"><div class="eyebrow" style="margin-bottom:8px">Hinweise</div><div class="terms-text">${quote.notes}</div></div>` : ''}
-    ${quote.terms ? `<div class="section"><div class="eyebrow" style="margin-bottom:8px">Konditionen</div><div class="terms-text">${quote.terms}</div></div>` : ''}
-    ${quote.nextSteps ? `<div class="section"><div class="eyebrow" style="margin-bottom:12px">Nächste Schritte</div><ol class="steps">${quote.nextSteps.split('\n').filter(l=>l.trim()).map(l=>`<li><span>${l.replace(/^\d+\.\s*/,'')}</span></li>`).join('')}</ol></div>` : ''}
-    ${quote.footer ? `<div class="section" style="padding-top:24px;border-top:1px solid #F0EDE8"><div style="font-size:14px;color:#6B6560;font-style:italic;line-height:1.65">${quote.footer}</div></div>` : ''}
+    <div class="section">
+      <div class="section-heading"><span class="section-num">02</span><span class="section-title">Investition</span></div>
+      <div class="invest-block">
+        <div class="invest-grid">
+          <div class="ig-label">Zwischensumme (netto)</div><div class="ig-val">${fmtMoney(subtotal)}</div>
+          ${discountAmt>0?`<div class="ig-label">Rabatt</div><div class="ig-val">−${fmtMoney(discountAmt)}</div>`:''}
+          ${Number(quote.taxRate)>0?`<div class="ig-label">USt ${quote.taxRate}%</div><div class="ig-val">${fmtMoney(tax)}</div>`:''}
+        </div>
+        <div class="invest-total">
+          <div class="invest-total-label">Gesamt</div>
+          <div class="invest-total-val">${fmtMoney(total)}</div>
+        </div>
+      </div>
+    </div>
+    ${quote.nextSteps?`<div class="section"><div class="section-heading"><span class="section-num">03</span><span class="section-title">So geht's weiter</span></div><ul class="steps-list">${quote.nextSteps.split('\n').filter(l=>l.trim()).map((l,i)=>`<li><div class="step-num">${i+1}</div><div>${l.replace(/^\d+\.\s*/,'')}</div></li>`).join('')}</ul></div>`:''}
+    ${quote.footer?`<div style="font-size:13px;color:#2F2A25;line-height:1.6;margin-bottom:6px">${quote.footer}</div>`:''}
+    ${quote.terms?`<div class="terms-box">${quote.terms}</div>`:''}
+    <div class="company-footer">
+      <div class="cf-col"><div class="cf-label">WebArs e.U.</div>${quote.contactSnapshot?.ansprechpartner?`<div>Ihr Ansprechpartner: ${quote.contactSnapshot.ansprechpartner}</div>`:''}</div>
+      <div class="cf-col"><div class="cf-label">Kontakt</div><div><a href="mailto:office@webars.at" style="color:inherit">office@webars.at</a></div></div>
+    </div>
     ${actionBar}
   </div>
-  <div class="footer-note">Dieses Angebot wurde von <strong>WebArs e.U.</strong> erstellt.<br>Bei Fragen: <a href="mailto:office@webars.at" style="color:#141210">office@webars.at</a></div>
 </div>
 </body></html>`);
 });
