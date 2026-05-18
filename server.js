@@ -1336,20 +1336,51 @@ app.post('/api/gamification/sync', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/gamification — return daily data for dashboard (auth)
-// Returns: {daily: [{date, count, eur}, ...]}
+// GET /api/gamification — return daily data + derived stats for dashboard (auth)
 app.get('/api/gamification', requireAuth, async (_req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
   try {
     const [rows] = await pool.query(
-      `SELECT date, count, eur FROM crm_gamification_daily ORDER BY date DESC LIMIT 90`
+      `SELECT date, count, eur FROM crm_gamification_daily ORDER BY date DESC LIMIT 180`
     );
     const daily = rows.map(r => ({
-      date: r.date.toISOString().split('T')[0], // YYYY-MM-DD
+      date: r.date.toISOString().split('T')[0],
       count: r.count,
       eur: Number(r.eur)
     }));
-    res.json({ daily });
+
+    // Day streak — consecutive days back from today with at least 1 task
+    const dateSet = new Set(daily.map(d => d.date));
+    let streak = 0;
+    const cursor = new Date(); cursor.setHours(0,0,0,0);
+    while (dateSet.has(cursor.toISOString().split('T')[0])) {
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    // Current week (Mon–Sun) stats
+    const now = new Date(); now.setHours(0,0,0,0);
+    const dayOfWeek = (now.getDay() + 6) % 7; // Mon=0
+    const monday = new Date(now); monday.setDate(now.getDate() - dayOfWeek);
+    const mondayStr = monday.toISOString().split('T')[0];
+    const weekDays = daily.filter(d => d.date >= mondayStr);
+    const weekTasks = weekDays.reduce((s, d) => s + d.count, 0);
+    const weekEur   = weekDays.reduce((s, d) => s + d.eur, 0);
+
+    // Last 3 calendar months for comparison
+    const monthly = {};
+    for (const d of daily) {
+      const m = d.date.slice(0, 7); // YYYY-MM
+      if (!monthly[m]) monthly[m] = { tasks: 0, eur: 0 };
+      monthly[m].tasks += d.count;
+      monthly[m].eur   += d.eur;
+    }
+    const monthList = Object.entries(monthly)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .slice(0, 3)
+      .map(([month, v]) => ({ month, tasks: v.tasks, eur: v.eur }));
+
+    res.json({ daily, streak, weekTasks, weekEur, monthList });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -7910,27 +7910,37 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
   );
 }
 
-function GamificationView({onLoadData}) {
+function GamificationView({onLoadData, onReset}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showRanks, setShowRanks] = useState(false);
+  const [weekGoal, setWeekGoal] = useState(() => parseInt(localStorage.getItem('gami_weekGoal')||'50'));
+  const [editGoal, setEditGoal] = useState(false);
+  const [goalInput, setGoalInput] = useState('50');
+  const [resetting, setResetting] = useState(false);
 
+  const load = async () => {
+    try {
+      const result = await onLoadData();
+      setData(result || {daily:[], streak:0, weekTasks:0, weekEur:0, monthList:[]});
+      setError('');
+    } catch(e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [onLoadData]);
+
+  // Auto-refresh every 60s
   useEffect(() => {
-    (async () => {
-      try {
-        const result = await onLoadData();
-        setData(result || {daily: []});
-        setError('');
-      } catch(e) {
-        setError(e.message);
-        setData({daily: []});
-      } finally {
-        setLoading(false);
-      }
-    })();
+    const t = setInterval(() => { onLoadData().then(r => { if(r) setData(r); }).catch(()=>{}); }, 60000);
+    return () => clearInterval(t);
   }, [onLoadData]);
 
+  if (loading) return <div style={{padding:'60px 28px',textAlign:'center',color:'#B0ABA5',fontSize:14}}>Laden...</div>;
   if (loading) return <div style={{padding:'60px 28px',textAlign:'center',color:'#B0ABA5',fontSize:14}}>Laden...</div>;
   if (error)   return <div style={{padding:'40px 28px',color:'#B45309'}}>Fehler: {error}</div>;
 
@@ -7952,142 +7962,194 @@ function GamificationView({onLoadData}) {
     {min:15000,num:15, name:'Legende',       icon:'🌈', color:'#EC4899'},
   ];
 
-  const daily = (data?.daily || []).slice().sort((a,b) => new Date(b.date)-new Date(a.date));
+  const daily      = (data?.daily || []).slice().sort((a,b) => new Date(b.date)-new Date(a.date));
   const totalTasks = daily.reduce((s,d) => s+d.count, 0);
   const totalEur   = daily.reduce((s,d) => s+Number(d.eur), 0);
   const bestDay    = daily.reduce((best,d) => d.count > best.count ? d : best, {count:0,eur:0,date:''});
+  const streak     = data?.streak || 0;
+  const weekTasks  = data?.weekTasks || 0;
+  const weekEur    = data?.weekEur || 0;
+  const monthList  = data?.monthList || [];
 
-  // Current month stats
-  const now = new Date();
-  const curMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const monthDays = daily.filter(d => d.date && d.date.startsWith(curMonth));
+  const now        = new Date();
+  const todayStr   = now.toISOString().split('T')[0];
+  const todayEntry = daily.find(d => d.date === todayStr) || {count:0,eur:0};
+  const curMonth   = todayStr.slice(0,7);
+  const monthDays  = daily.filter(d => d.date?.startsWith(curMonth));
   const monthTasks = monthDays.reduce((s,d) => s+d.count, 0);
   const monthEur   = monthDays.reduce((s,d) => s+Number(d.eur), 0);
 
-  // Today
-  const todayStr = now.toISOString().split('T')[0];
-  const todayEntry = daily.find(d => d.date === todayStr) || {count:0, eur:0};
-
-  // Level
   let curLevel = LEVELS[0];
   for (const l of LEVELS) { if (totalTasks >= l.min) curLevel = l; }
   const nextLevel = LEVELS.find(l => l.num === curLevel.num + 1);
-  const levelPct  = nextLevel ? Math.min(100, Math.round(((totalTasks - curLevel.min) / (nextLevel.min - curLevel.min)) * 100)) : 100;
+  const levelPct  = nextLevel ? Math.min(100,Math.round(((totalTasks-curLevel.min)/(nextLevel.min-curLevel.min))*100)) : 100;
 
-  // Last 7 days bar chart
   const last7 = [];
   for (let i=6; i>=0; i--) {
     const d = new Date(now); d.setDate(d.getDate()-i);
     const key = d.toISOString().split('T')[0];
-    const entry = daily.find(x => x.date === key) || {count:0,eur:0,date:key};
-    last7.push({...entry, date:key, label:['So','Mo','Di','Mi','Do','Fr','Sa'][d.getDay()]});
+    last7.push({...(daily.find(x=>x.date===key)||{count:0,eur:0,date:key}), label:['So','Mo','Di','Mi','Do','Fr','Sa'][d.getDay()]});
   }
   const maxCount = Math.max(...last7.map(d=>d.count), 1);
 
-  const StatCard = ({label, value, sub, color, accent}) => (
-    <div style={{background:'white',borderRadius:12,padding:'18px 20px',border:`1.5px solid ${accent||'rgba(0,0,0,.07)'}`,flex:1,minWidth:140,position:'relative',overflow:'hidden'}}>
+  const weekPct   = Math.min(100, Math.round((weekTasks/weekGoal)*100));
+  const monthName = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'][now.getMonth()];
+  const MONTH_NAMES = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+
+  const motivations = [
+    [0,  "Leg los — jeder Task bringt dich weiter!"],
+    [1,  "Guter Start! Der Momentum baut sich auf."],
+    [3,  "3 Tage am Stück — du bleibst dran!"],
+    [7,  "Eine Woche Streak — beeindruckend!"],
+    [14, "2 Wochen täglich — das ist echte Disziplin!"],
+    [30, "30-Tage-Streak — Legende am Werk!"],
+  ];
+  const motivText = motivations.slice().reverse().find(([d]) => streak >= d)?.[1] || '';
+
+  const Card = ({label, value, sub, color, accent, extra}) => (
+    <div style={{background:'white',borderRadius:12,padding:'16px 20px',border:`1.5px solid ${accent||'rgba(0,0,0,.07)'}`,flex:1,minWidth:130,position:'relative',overflow:'hidden'}}>
       <div style={{position:'absolute',top:0,left:0,right:0,height:3,background:color||'#10B981',borderRadius:'12px 12px 0 0'}}/>
-      <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',letterSpacing:'.04em',textTransform:'uppercase',marginBottom:6}}>{label}</div>
-      <div style={{fontSize:26,fontWeight:800,color:color||'#141210',letterSpacing:'-0.03em',lineHeight:1}}>{value}</div>
-      {sub && <div style={{fontSize:11,color:'#6B7280',marginTop:5,fontWeight:500}}>{sub}</div>}
+      <div style={{fontSize:10,fontWeight:600,color:'#A8A39D',letterSpacing:'.05em',textTransform:'uppercase',marginBottom:5}}>{label}</div>
+      <div style={{fontSize:24,fontWeight:800,color:color||'#141210',letterSpacing:'-0.03em',lineHeight:1}}>{value}</div>
+      {sub   && <div style={{fontSize:11,color:'#6B7280',marginTop:4,fontWeight:500}}>{sub}</div>}
+      {extra && extra}
     </div>
   );
 
-  const monthName = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'][now.getMonth()];
-
   return (
-    <div style={{flex:1,overflow:'auto',padding:'24px 28px',background:'#F0FDF4'}}>
+    <div style={{flex:1,overflow:'auto',padding:'20px 28px',background:'#F0FDF4'}}>
 
       {/* Rang-Modal */}
       {showRanks && (
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowRanks(false)}>
-          <div style={{background:'white',borderRadius:18,padding:'28px 32px',width:460,maxWidth:'90vw',maxHeight:'85vh',overflow:'auto',boxShadow:'0 24px 80px rgba(0,0,0,.25)'}} onClick={e=>e.stopPropagation()}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:22}}>
-              <div style={{fontSize:17,fontWeight:800,color:'#141210'}}>Alle Ränge</div>
-              <button onClick={()=>setShowRanks(false)} style={{background:'#F3F4F6',border:'none',borderRadius:8,width:30,height:30,cursor:'pointer',fontSize:16,color:'#6B7280',display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowRanks(false)}>
+          <div style={{background:'white',borderRadius:18,padding:'24px 28px',width:480,maxWidth:'92vw',maxHeight:'88vh',overflow:'auto',boxShadow:'0 24px 80px rgba(0,0,0,.3)'}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+              <div style={{fontSize:16,fontWeight:800,color:'#141210'}}>Alle 15 Ränge</div>
+              <button onClick={()=>setShowRanks(false)} style={{background:'#F3F4F6',border:'none',borderRadius:8,width:28,height:28,cursor:'pointer',fontSize:15,color:'#6B7280'}}>×</button>
             </div>
             {LEVELS.map(l => {
               const isActive = l.num === curLevel.num;
               const isDone   = totalTasks >= l.min;
-              const nextMin  = LEVELS.find(x=>x.num===l.num+1)?.min ?? null;
-              const pct = (isActive && nextMin) ? Math.min(100,Math.round(((totalTasks-l.min)/(nextMin-l.min))*100)) : 0;
+              const nxt      = LEVELS.find(x=>x.num===l.num+1);
+              const pct      = (isActive && nxt) ? Math.min(100,Math.round(((totalTasks-l.min)/(nxt.min-l.min))*100)) : 0;
               return (
-                <div key={l.num} style={{display:'flex',alignItems:'center',gap:14,padding:'12px 16px',borderRadius:12,marginBottom:6,background:isActive?`${l.color}12`:'transparent',border:isActive?`1.5px solid ${l.color}35`:'1.5px solid transparent'}}>
-                  <div style={{width:44,height:44,borderRadius:'50%',background:isDone?`linear-gradient(135deg,${l.color},${l.color}bb)`:'#E5E7EB',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0,boxShadow:isDone?`0 3px 12px ${l.color}40`:'none'}}>
+                <div key={l.num} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',borderRadius:10,marginBottom:4,background:isActive?`${l.color}12`:'transparent',border:isActive?`1.5px solid ${l.color}35`:'1.5px solid transparent'}}>
+                  <div style={{width:40,height:40,borderRadius:'50%',background:isDone?`linear-gradient(135deg,${l.color},${l.color}bb)`:'#E5E7EB',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,boxShadow:isDone?`0 2px 10px ${l.color}40`:'none'}}>
                     {isDone ? l.icon : '🔒'}
                   </div>
-                  <div style={{flex:1}}>
-                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:2}}>
                       <span style={{fontSize:10,fontWeight:700,color:isDone?l.color:'#9CA3AF',letterSpacing:'.05em',textTransform:'uppercase'}}>Lvl {l.num}</span>
                       <span style={{fontSize:13,fontWeight:700,color:isDone?'#141210':'#9CA3AF'}}>{l.name}</span>
-                      {isActive && <span style={{fontSize:9,fontWeight:700,background:l.color,color:'white',padding:'2px 7px',borderRadius:99}}>AKTUELL</span>}
+                      {isActive && <span style={{fontSize:9,fontWeight:700,background:l.color,color:'white',padding:'1px 6px',borderRadius:99}}>JETZT</span>}
                     </div>
-                    <div style={{fontSize:11,color:'#9CA3AF'}}>{l.min === 0 ? 'Startrang' : `ab ${l.min} Tasks`}{nextMin ? ` · weiter bei ${nextMin}` : ' · Maximalstufe'}</div>
-                    {isActive && nextMin && (
-                      <div style={{height:4,background:'#E5E7EB',borderRadius:99,overflow:'hidden',marginTop:5}}>
-                        <div style={{height:'100%',width:`${pct}%`,background:`linear-gradient(90deg,${l.color},${LEVELS.find(x=>x.num===l.num+1)?.color||l.color})`,borderRadius:99}}/>
-                      </div>
-                    )}
+                    <div style={{fontSize:10,color:'#9CA3AF'}}>{l.min===0?'Start':(`ab ${l.min.toLocaleString()} Tasks`)}{nxt?` · bis ${nxt.min.toLocaleString()}`:'· Maximalstufe'}</div>
+                    {isActive && nxt && <div style={{height:3,background:'#E5E7EB',borderRadius:99,overflow:'hidden',marginTop:4}}><div style={{height:'100%',width:`${pct}%`,background:`linear-gradient(90deg,${l.color},${nxt.color})`,borderRadius:99}}/></div>}
                   </div>
-                  <div style={{fontSize:13,fontWeight:800,color:isDone?l.color:'#D1D5DB',flexShrink:0}}>
-                    {isDone ? (isActive&&nextMin ? `${pct}%` : '✓') : `${l.min}`}
+                  <div style={{fontSize:12,fontWeight:800,color:isDone?l.color:'#D1D5DB',flexShrink:0,minWidth:36,textAlign:'right'}}>
+                    {isDone ? (isActive&&nxt?`${pct}%`:'✓') : l.min.toLocaleString()}
                   </div>
                 </div>
               );
             })}
+            <div style={{marginTop:16,padding:'12px 14px',background:'#F0FDF4',borderRadius:10,fontSize:11,color:'#6B7280',textAlign:'center'}}>
+              Du hast <strong style={{color:'#059669'}}>{totalTasks.toLocaleString()}</strong> Tasks insgesamt · {nextLevel ? `noch ${(nextLevel.min-totalTasks).toLocaleString()} bis ${nextLevel.icon} ${nextLevel.name}` : 'Maximalstufe erreicht!'}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Level Hero — klickbar für Rang-Übersicht */}
-      <div onClick={()=>setShowRanks(true)} style={{background:`linear-gradient(135deg,${curLevel.color}1a 0%,${curLevel.color}08 100%)`,border:`1.5px solid ${curLevel.color}40`,borderRadius:16,padding:'20px 24px',marginBottom:20,display:'flex',alignItems:'center',gap:20,cursor:'pointer',transition:'transform .12s,box-shadow .12s'}}
+      {/* Level Hero */}
+      <div onClick={()=>setShowRanks(true)} style={{background:`linear-gradient(135deg,${curLevel.color}1a 0%,${curLevel.color}08 100%)`,border:`1.5px solid ${curLevel.color}40`,borderRadius:16,padding:'18px 22px',marginBottom:16,display:'flex',alignItems:'center',gap:18,cursor:'pointer',transition:'transform .12s,box-shadow .12s'}}
         onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow=`0 10px 32px ${curLevel.color}25`;}}
         onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
-        <div style={{width:68,height:68,borderRadius:'50%',background:`linear-gradient(135deg,${curLevel.color},${curLevel.color}bb)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,flexShrink:0,boxShadow:`0 6px 24px ${curLevel.color}55`}}>
+        <div style={{width:64,height:64,borderRadius:'50%',background:`linear-gradient(135deg,${curLevel.color},${curLevel.color}cc)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,flexShrink:0,boxShadow:`0 6px 22px ${curLevel.color}55`}}>
           {curLevel.icon}
         </div>
         <div style={{flex:1}}>
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:5}}>
-            <span style={{fontSize:10,fontWeight:700,color:curLevel.color,letterSpacing:'.08em',textTransform:'uppercase',background:`${curLevel.color}18`,padding:'2px 8px',borderRadius:99}}>Level {curLevel.num}</span>
-            <span style={{fontSize:19,fontWeight:800,color:'#141210'}}>{curLevel.name}</span>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
+            <span style={{fontSize:10,fontWeight:700,color:curLevel.color,letterSpacing:'.08em',textTransform:'uppercase',background:`${curLevel.color}18`,padding:'2px 8px',borderRadius:99}}>Level {curLevel.num} / 15</span>
+            <span style={{fontSize:18,fontWeight:800,color:'#141210'}}>{curLevel.name}</span>
           </div>
           {nextLevel ? (
             <>
-              <div style={{height:8,background:'rgba(0,0,0,.08)',borderRadius:99,overflow:'hidden',marginBottom:5}}>
+              <div style={{height:7,background:'rgba(0,0,0,.08)',borderRadius:99,overflow:'hidden',marginBottom:4}}>
                 <div style={{height:'100%',width:`${levelPct}%`,background:`linear-gradient(90deg,${curLevel.color},${nextLevel.color})`,borderRadius:99,transition:'width .5s'}}/>
               </div>
-              <div style={{fontSize:11,color:'#6B7280'}}>{totalTasks} / {nextLevel.min} Tasks bis {nextLevel.icon} <strong style={{color:nextLevel.color}}>{nextLevel.name}</strong> <span style={{color:'#B0ABA5'}}>· hier klicken</span></div>
+              <div style={{fontSize:11,color:'#6B7280'}}>{totalTasks.toLocaleString()} / {nextLevel.min.toLocaleString()} · noch <strong style={{color:nextLevel.color}}>{(nextLevel.min-totalTasks).toLocaleString()} Tasks</strong> bis {nextLevel.icon} {nextLevel.name} <span style={{color:'#B0ABA5',fontSize:10}}>· klicken für alle Ränge</span></div>
             </>
-          ) : (
-            <div style={{fontSize:12,color:curLevel.color,fontWeight:700}}>Maximalstufe erreicht!</div>
-          )}
+          ) : <div style={{fontSize:12,color:curLevel.color,fontWeight:700}}>Maximalstufe erreicht!</div>}
         </div>
         <div style={{textAlign:'right',flexShrink:0}}>
-          <div style={{fontSize:30,fontWeight:900,color:curLevel.color,letterSpacing:'-0.03em',lineHeight:1}}>€ {totalEur.toFixed(0)}</div>
-          <div style={{fontSize:11,color:'#6B7280',marginTop:3}}>gesamt verdient</div>
+          <div style={{fontSize:28,fontWeight:900,color:curLevel.color,letterSpacing:'-0.03em',lineHeight:1}}>€ {totalEur.toFixed(0)}</div>
+          <div style={{fontSize:10,color:'#6B7280',marginTop:2}}>gesamt verdient</div>
         </div>
       </div>
 
+      {/* Streak + Motivationstext */}
+      {(streak > 0 || motivText) && (
+        <div style={{background:`linear-gradient(135deg,#FFF7ED,#FFFBEB)`,border:'1.5px solid #FED7AA',borderRadius:12,padding:'12px 18px',marginBottom:16,display:'flex',alignItems:'center',gap:14}}>
+          <div style={{fontSize:28,lineHeight:1}}>{streak>=7?'🔥':streak>=3?'✨':'⚡'}</div>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:'#92400E'}}>{streak} Tag{streak!==1?'e':''} Streak{streak>=7?' — absolut heiss!':streak>=3?' — du bist auf Kurs!':''}</div>
+            {motivText && <div style={{fontSize:11,color:'#B45309',marginTop:2}}>{motivText}</div>}
+          </div>
+          <div style={{marginLeft:'auto',textAlign:'right'}}>
+            <div style={{fontSize:22,fontWeight:900,color:'#F59E0B'}}>{streak}</div>
+            <div style={{fontSize:10,color:'#B45309'}}>Tage</div>
+          </div>
+        </div>
+      )}
+
       {/* Stat Cards */}
-      <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
-        <StatCard label="Heute" value={todayEntry.count} sub={`€ ${Number(todayEntry.eur).toFixed(2)} verdient`} color="#10B981" accent="rgba(16,185,129,.2)"/>
-        <StatCard label={monthName} value={monthTasks} sub={`€ ${monthEur.toFixed(2)} diesen Monat`} color="#3B82F6" accent="rgba(59,130,246,.15)"/>
-        <StatCard label="Bester Tag" value={bestDay.count||'–'} sub={bestDay.date ? new Date(bestDay.date).toLocaleDateString('de-AT',{weekday:'short',day:'2-digit',month:'2-digit'}) : 'noch kein Tag'} color="#F59E0B" accent="rgba(245,158,11,.15)"/>
-        <StatCard label="Gesamt" value={totalTasks} sub={`${curLevel.icon} ${curLevel.name}`} color={curLevel.color} accent={`${curLevel.color}25`}/>
+      <div style={{display:'flex',gap:10,marginBottom:16,flexWrap:'wrap'}}>
+        <Card label="Heute" value={todayEntry.count} sub={`€ ${Number(todayEntry.eur).toFixed(2)}`} color="#10B981" accent="rgba(16,185,129,.2)"/>
+        <Card label={monthName} value={monthTasks} sub={`€ ${monthEur.toFixed(2)}`} color="#3B82F6" accent="rgba(59,130,246,.15)"/>
+        <Card label="Rekordtag" value={bestDay.count||'–'} sub={bestDay.date?new Date(bestDay.date).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit'}):'–'} color="#F59E0B" accent="rgba(245,158,11,.15)"/>
+        <Card label="Gesamt" value={totalTasks.toLocaleString()} sub={`${curLevel.icon} ${curLevel.name}`} color={curLevel.color} accent={`${curLevel.color}25`}/>
       </div>
 
-      {/* 7-Day Bar Chart */}
-      <div style={{background:'white',borderRadius:12,padding:'20px 24px',marginBottom:20,border:'1px solid rgba(16,185,129,.15)'}}>
-        <div style={{fontSize:13,fontWeight:700,color:'#141210',marginBottom:16}}>Letzte 7 Tage</div>
-        <div style={{display:'flex',gap:8,alignItems:'flex-end',height:110}}>
+      {/* Wochenziel */}
+      <div style={{background:'white',borderRadius:12,padding:'16px 20px',marginBottom:16,border:'1px solid rgba(16,185,129,.15)'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#141210'}}>Wochenziel</div>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            {editGoal ? (
+              <>
+                <input type="number" value={goalInput} onChange={e=>setGoalInput(e.target.value)} style={{width:70,padding:'4px 8px',fontSize:12,border:'1.5px solid #10B981',borderRadius:6,outline:'none'}} onKeyDown={e=>{if(e.key==='Enter'){const v=Math.max(1,parseInt(goalInput)||50);setWeekGoal(v);localStorage.setItem('gami_weekGoal',v);setEditGoal(false);}}}/>
+                <button onClick={()=>{const v=Math.max(1,parseInt(goalInput)||50);setWeekGoal(v);localStorage.setItem('gami_weekGoal',v);setEditGoal(false);}} style={{background:'#10B981',color:'white',border:'none',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer',fontWeight:600}}>OK</button>
+              </>
+            ) : (
+              <button onClick={()=>{setGoalInput(String(weekGoal));setEditGoal(true);}} style={{background:'transparent',border:'1px solid #D1FAE5',color:'#6B7280',borderRadius:6,padding:'3px 9px',fontSize:11,cursor:'pointer'}}>Ziel: {weekGoal} Tasks</button>
+            )}
+          </div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <div style={{flex:1}}>
+            <div style={{height:10,background:'#D1FAE5',borderRadius:99,overflow:'hidden'}}>
+              <div style={{height:'100%',width:`${weekPct}%`,background:weekPct>=100?`linear-gradient(90deg,#10B981,#059669)`:`linear-gradient(90deg,#34D399,#10B981)`,borderRadius:99,transition:'width .4s'}}/>
+            </div>
+          </div>
+          <div style={{fontSize:13,fontWeight:700,color:weekPct>=100?'#059669':'#141210',flexShrink:0}}>
+            {weekTasks} / {weekGoal}
+            {weekPct>=100 && <span style={{marginLeft:6,fontSize:11,background:'#ECFDF5',color:'#059669',padding:'1px 7px',borderRadius:99,border:'1px solid #6EE7B7'}}>ZIEL ERREICHT!</span>}
+          </div>
+        </div>
+        <div style={{fontSize:11,color:'#6B7280',marginTop:6}}>€ {weekEur.toFixed(2)} diese Woche · {weekPct<100?`noch ${weekGoal-weekTasks} Tasks bis zum Ziel`:'Wochenziel geschafft!'}</div>
+      </div>
+
+      {/* 7-Tage Balken */}
+      <div style={{background:'white',borderRadius:12,padding:'16px 20px',marginBottom:16,border:'1px solid rgba(16,185,129,.15)'}}>
+        <div style={{fontSize:13,fontWeight:700,color:'#141210',marginBottom:14}}>Letzte 7 Tage</div>
+        <div style={{display:'flex',gap:6,alignItems:'flex-end',height:110}}>
           {last7.map(d => {
             const isToday = d.date === todayStr;
             const barH = Math.max((d.count/maxCount)*88, d.count>0?10:3);
             return (
-              <div key={d.date} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+              <div key={d.date} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
                 {d.count>0 && <div style={{fontSize:10,fontWeight:700,color:isToday?'#059669':'#6B7280'}}>{d.count}</div>}
                 <div style={{width:'100%',height:88,display:'flex',alignItems:'flex-end'}}>
-                  <div style={{width:'100%',height:barH,background:isToday?'#10B981':d.count>0?'#6EE7B7':'#D1FAE5',borderRadius:'4px 4px 2px 2px',transition:'height .3s',boxShadow:isToday?'0 2px 8px rgba(16,185,129,.4)':'none'}}/>
+                  <div style={{width:'100%',height:barH,background:isToday?'linear-gradient(180deg,#10B981,#059669)':d.count>0?'#6EE7B7':'#D1FAE5',borderRadius:'4px 4px 2px 2px',transition:'height .3s',boxShadow:isToday?'0 2px 8px rgba(16,185,129,.5)':'none'}}/>
                 </div>
                 <div style={{fontSize:11,fontWeight:isToday?700:400,color:isToday?'#059669':'#9CA3AF'}}>{d.label}</div>
               </div>
@@ -8096,35 +8158,63 @@ function GamificationView({onLoadData}) {
         </div>
       </div>
 
-      {/* Daily Table */}
+      {/* Monatsvergleich */}
+      {monthList.length > 1 && (
+        <div style={{background:'white',borderRadius:12,padding:'16px 20px',marginBottom:16,border:'1px solid rgba(16,185,129,.15)'}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#141210',marginBottom:14}}>Monatsvergleich</div>
+          <div style={{display:'flex',gap:16,alignItems:'flex-end'}}>
+            {monthList.map((m,i) => {
+              const maxT = Math.max(...monthList.map(x=>x.tasks),1);
+              const barH = Math.max((m.tasks/maxT)*80,m.tasks>0?8:3);
+              const isThis = m.month===curMonth;
+              const [yr,mo] = m.month.split('-');
+              return (
+                <div key={m.month} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                  {m.tasks>0 && <div style={{fontSize:11,fontWeight:700,color:isThis?'#059669':'#6B7280'}}>{m.tasks}</div>}
+                  <div style={{width:'100%',height:80,display:'flex',alignItems:'flex-end'}}>
+                    <div style={{width:'100%',height:barH,background:isThis?'linear-gradient(180deg,#10B981,#059669)':'#A7F3D0',borderRadius:'5px 5px 2px 2px'}}/>
+                  </div>
+                  <div style={{fontSize:11,fontWeight:isThis?700:400,color:isThis?'#059669':'#6B7280'}}>{MONTH_NAMES[parseInt(mo,10)-1]}</div>
+                  <div style={{fontSize:10,color:'#9CA3AF'}}>€ {m.eur.toFixed(0)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Verlaufstabelle + Reset */}
       <div style={{background:'white',borderRadius:12,overflow:'hidden',border:'1px solid rgba(16,185,129,.15)'}}>
-        <div style={{padding:'14px 20px',borderBottom:'1px solid rgba(0,0,0,.06)',fontSize:13,fontWeight:700,color:'#141210'}}>Verlauf</div>
+        <div style={{padding:'12px 20px',borderBottom:'1px solid rgba(0,0,0,.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{fontSize:13,fontWeight:700,color:'#141210'}}>Verlauf</span>
+          <button onClick={async()=>{if(!window.confirm('Alle Gamification-Daten wirklich löschen?'))return;setResetting(true);try{await onReset();await load();}finally{setResetting(false);}}} style={{background:'transparent',border:'1px solid #D1FAE5',color:'#9CA3AF',borderRadius:6,padding:'3px 10px',fontSize:11,cursor:'pointer'}}>{resetting?'…':'Daten zurücksetzen'}</button>
+        </div>
         {daily.length === 0 ? (
-          <div style={{padding:'32px 20px',textAlign:'center',color:'#B0ABA5',fontSize:13}}>Noch keine Daten. Nach dem nächsten Task erscheinen sie hier.</div>
+          <div style={{padding:'28px 20px',textAlign:'center',color:'#B0ABA5',fontSize:13}}>Noch keine Daten — der nächste Task füllt das hier.</div>
         ) : (
           <table style={{width:'100%',borderCollapse:'collapse'}}>
             <thead>
               <tr style={{background:'#F0FDF4'}}>
-                <th style={{padding:'10px 20px',textAlign:'left',fontSize:11,fontWeight:600,color:'#6B7280',letterSpacing:'.04em',textTransform:'uppercase'}}>Datum</th>
-                <th style={{padding:'10px 20px',textAlign:'right',fontSize:11,fontWeight:600,color:'#6B7280',letterSpacing:'.04em',textTransform:'uppercase'}}>Tasks</th>
-                <th style={{padding:'10px 20px',textAlign:'right',fontSize:11,fontWeight:600,color:'#6B7280',letterSpacing:'.04em',textTransform:'uppercase'}}>EUR</th>
-                <th style={{padding:'10px 20px',width:110}}/>
+                <th style={{padding:'9px 20px',textAlign:'left',fontSize:10,fontWeight:600,color:'#6B7280',letterSpacing:'.05em',textTransform:'uppercase'}}>Datum</th>
+                <th style={{padding:'9px 20px',textAlign:'right',fontSize:10,fontWeight:600,color:'#6B7280',letterSpacing:'.05em',textTransform:'uppercase'}}>Tasks</th>
+                <th style={{padding:'9px 20px',textAlign:'right',fontSize:10,fontWeight:600,color:'#6B7280',letterSpacing:'.05em',textTransform:'uppercase'}}>EUR</th>
+                <th style={{padding:'9px 20px',width:100}}/>
               </tr>
             </thead>
             <tbody>
               {daily.map(entry => {
-                const isToday = entry.date === todayStr;
+                const isToday = entry.date===todayStr;
                 const isBest  = entry.count>0 && entry.count===bestDay.count;
                 const pct     = Math.min(100,Math.round((entry.count/(bestDay.count||1))*100));
                 return (
                   <tr key={entry.date} style={{borderTop:'1px solid rgba(0,0,0,.04)',background:isToday?'#F0FDF4':'white'}}>
-                    <td style={{padding:'12px 20px',fontSize:13,color:'#141210',fontWeight:isToday?700:400}}>
-                      {isToday ? 'Heute' : new Date(entry.date).toLocaleDateString('de-AT',{weekday:'short',day:'2-digit',month:'2-digit'})}
-                      {isBest && <span style={{marginLeft:7,fontSize:10,background:'#ECFDF5',color:'#059669',padding:'2px 7px',borderRadius:99,fontWeight:700,border:'1px solid #6EE7B7'}}>REKORD</span>}
+                    <td style={{padding:'11px 20px',fontSize:13,color:'#141210',fontWeight:isToday?700:400}}>
+                      {isToday?'Heute':new Date(entry.date).toLocaleDateString('de-AT',{weekday:'short',day:'2-digit',month:'2-digit'})}
+                      {isBest&&<span style={{marginLeft:7,fontSize:10,background:'#ECFDF5',color:'#059669',padding:'2px 7px',borderRadius:99,fontWeight:700,border:'1px solid #6EE7B7'}}>REKORD</span>}
                     </td>
-                    <td style={{padding:'12px 20px',textAlign:'right',fontSize:13,fontWeight:700,color:isToday?'#059669':'#141210'}}>{entry.count}</td>
-                    <td style={{padding:'12px 20px',textAlign:'right',fontSize:13,fontWeight:600,color:'#10B981'}}>€ {Number(entry.eur).toFixed(2)}</td>
-                    <td style={{padding:'12px 20px'}}>
+                    <td style={{padding:'11px 20px',textAlign:'right',fontSize:13,fontWeight:700,color:isToday?'#059669':'#141210'}}>{entry.count}</td>
+                    <td style={{padding:'11px 20px',textAlign:'right',fontSize:13,fontWeight:600,color:'#10B981'}}>€ {Number(entry.eur).toFixed(2)}</td>
+                    <td style={{padding:'11px 20px'}}>
                       <div style={{height:5,background:'#D1FAE5',borderRadius:99,overflow:'hidden'}}>
                         <div style={{height:'100%',width:`${pct}%`,background:isToday?'#10B981':'#34D399',borderRadius:99}}/>
                       </div>
@@ -8680,14 +8770,13 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
           </div>
           <GamificationView
             onLoadData={async ()=>{
-              try {
-                const resp=await fetch('/api/gamification',{headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                return await resp.json();
-              } catch(e) {
-                console.error('GamificationView load error:', e);
-                return {daily:[]};
-              }
+              const resp=await fetch('/api/gamification',{headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              return await resp.json();
+            }}
+            onReset={async ()=>{
+              const resp=await fetch('/api/gamification',{method:'DELETE',headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             }}
           />
         </>) : activeId === INVOICES_VIEW ? (<>
