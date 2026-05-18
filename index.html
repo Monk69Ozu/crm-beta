@@ -7910,6 +7910,75 @@ function LeadsView({leads, sections, onUpdateLeads, onConvertLead}){
   );
 }
 
+function GamificationView({onLoadData}) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await onLoadData();
+        setData(result || {daily: []});
+        setError('');
+      } catch(e) {
+        setError(e.message);
+        setData({daily: []});
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [onLoadData]);
+
+  if (loading) {
+    return <div style={{padding: '40px 28px', textAlign: 'center', color: '#B0ABA5'}}>Laden...</div>;
+  }
+
+  if (error) {
+    return <div style={{padding: '40px 28px', color: '#dc2626'}}>Fehler: {error}</div>;
+  }
+
+  const daily = (data?.daily || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  return (
+    <div style={{flex: 1, overflow: 'auto', padding: '20px 28px'}}>
+      <div style={{marginBottom: 24}}>
+        <h2 style={{fontSize: 16, fontWeight: 700, marginBottom: 12}}>Tägliche Übersicht</h2>
+        {daily.length === 0 ? (
+          <div style={{color: '#B0ABA5', fontSize: 13}}>Noch keine Daten erfasst.</div>
+        ) : (
+          <div style={{background: '#F9F8F6', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,0,0,.07)'}}>
+            <table style={{width: '100%', borderCollapse: 'collapse'}}>
+              <thead>
+                <tr style={{borderBottom: '1px solid rgba(0,0,0,.07)', background: '#F3F0EB'}}>
+                  <th style={{padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>Datum</th>
+                  <th style={{padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>Tasks</th>
+                  <th style={{padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#6B6560'}}>EUR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {daily.map((entry, idx) => (
+                  <tr key={entry.date} style={{borderBottom: idx < daily.length - 1 ? '1px solid rgba(0,0,0,.05)' : 'none'}}>
+                    <td style={{padding: '12px 14px', fontSize: 13, color: '#0F0E0C'}}>
+                      {new Date(entry.date).toLocaleDateString('de-AT', {year: 'numeric', month: '2-digit', day: '2-digit'})}
+                    </td>
+                    <td style={{padding: '12px 14px', textAlign: 'right', fontSize: 13, color: '#0F0E0C', fontWeight: 600}}>{entry.count}</td>
+                    <td style={{padding: '12px 14px', textAlign: 'right', fontSize: 13, color: '#0F0E0C', fontWeight: 600}}>€ {Number(entry.eur).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <div style={{fontSize: 12, color: '#A8A39D', marginTop: 20}}>
+        <p><strong>Wie das funktioniert:</strong></p>
+        <p>Das Overlay (PC-Benachrichtigung) sendet nach jedem erledigten Task automatisch die Daten hierher. Diese Tabelle zeigt die tägliche Zusammenfassung.</p>
+      </div>
+    </div>
+  );
+}
+
 function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const [state,setState]=useState(()=>({
     ...initialData,
@@ -7940,6 +8009,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const FORMS_VIEW = '__forms__';
   const CAMPAIGNS_VIEW = '__campaigns__';
   const LEADS_VIEW = '__leads__';
+  const GAMIFICATION_VIEW = '__gamification__';
   const [activeId,setActiveId]=useState((initialData.sections||DEFAULT_SECTIONS)[0]?.id);
   const [activeSubId,setActiveSubId]=useState(null);
   const [search,setSearch]=useState('');
@@ -8219,6 +8289,15 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               {count>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
             </button>
           );})()}
+          {/* Gamification */}
+          {(()=>{const isActive=activeId===GAMIFICATION_VIEW;return(
+            <button onClick={()=>setActiveId(GAMIFICATION_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>🎮</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Gamifikation</span>
+            </button>
+          );})()}
           {state.sections.map(s=>{
             const count=state.contacts.filter(c=>c.sectionId===s.id).length;
             const isActive=s.id===activeId;
@@ -8429,6 +8508,25 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
                 leads:(state.leads||[]).map(l=>l.id===lead.id?{...l,status:'converted',contactId:newContact.id}:l),
               });
               alert(`Kontakt "${newContact.ansprechpartner||newContact.firma}" angelegt${newDefs.length?` (${newDefs.length} neue Custom-Felder erstellt)`:''}.`);
+            }}
+          />
+        </>) : activeId === GAMIFICATION_VIEW ? (<>
+          <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+            <div style={{flex:1}}>
+              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>🎮 Gamifikation</h1>
+              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>Tägliche Task-Übersicht aus dem Overlay</div>
+            </div>
+          </div>
+          <GamificationView
+            onLoadData={async ()=>{
+              try {
+                const resp=await fetch('/api/gamification',{headers:{'Authorization':`Bearer ${window.WEBARS_API_TOKEN}`}});
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.json();
+              } catch(e) {
+                console.error('GamificationView load error:', e);
+                return {daily:[]};
+              }
             }}
           />
         </>) : activeId === INVOICES_VIEW ? (<>

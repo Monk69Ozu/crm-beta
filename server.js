@@ -256,6 +256,35 @@ async function initDb() {
         PRIMARY KEY (id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // ── GAMIFICATION: Daily task counter ───────────────────────────
+    // Overlay (done-overlay.ps1) syncs task completions here via POST /api/gamification/sync
+    // Dashboard (CRM) reads this for the Gamification view.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_gamification_daily (
+        id         INT          NOT NULL AUTO_INCREMENT,
+        date       DATE         NOT NULL,
+        count      INT          NOT NULL DEFAULT 0,
+        eur        DECIMAL(10,2) NOT NULL DEFAULT 0,
+        created_at DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_date (date),
+        INDEX idx_date (date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    // Singleton config for gamification sync (id=1).
+    // Stores: CRM_URL (for the overlay to know where to POST), SECRET_KEY (for sync validation).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_gamification_config (
+        id           TINYINT      NOT NULL DEFAULT 1,
+        crm_url      VARCHAR(255) NOT NULL,
+        secret_key   VARCHAR(64)  NOT NULL,
+        last_sync_at DATETIME     DEFAULT NULL,
+        created_at   DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        updated_at   DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // ── BACKUP HARDENING ───────────────────────────────────────────
     // Add tier column so we can keep different retention windows.
     // Existing rows get tier='legacy' (kept indefinitely — safe).
@@ -1256,6 +1285,109 @@ app.delete('/api/claude-usage/:email', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM crm_claude_usage WHERE email = ?', [email]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GAMIFICATION: Dashboard data sync from overlay ──────────────────
+
+// GET /api/gamification/config — get sync config (auth)
+app.get('/api/gamification/config', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [row] = await pool.query('SELECT crm_url, last_sync_at FROM crm_gamification_config WHERE id = 1');
+    if (!row) {
+      return res.status(404).json({ error: 'Config not found' });
+    }
+    res.json({
+      crm_url: row.crm_url,
+      last_sync_at: row.last_sync_at ? new Date(row.last_sync_at).toISOString() : null
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/gamification/sync?key=SECRET — overlay posts task completions here
+// Body: {count, eur, date}
+// Returns: {ok: true} on success
+// Auth: same API_SECRET as all other endpoints (passed as ?key= query param)
+app.post('/api/gamification/sync', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+
+  const queryKey = (req.query.key || '').toString().trim();
+  const keyBuf   = Buffer.from(queryKey, 'utf8');
+  const validKey = keyBuf.length === API_SECRET_BUF.length &&
+    nodeCrypto.timingSafeEqual(keyBuf, API_SECRET_BUF);
+  if (!validKey) return res.status(403).json({ error: 'Invalid secret' });
+
+  try {
+    const { count = 0, eur = 0, date } = req.body;
+    const syncDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+
+    await pool.query(
+      `INSERT INTO crm_gamification_daily (date, count, eur)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         count = count + ?,
+         eur   = eur + ?,
+         updated_at = CURRENT_TIMESTAMP`,
+      [syncDate, count, eur, count, eur]
+    );
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/gamification — return daily data for dashboard (auth)
+// Returns: {daily: [{date, count, eur}, ...]}
+app.get('/api/gamification', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [rows] = await pool.query(
+      `SELECT date, count, eur FROM crm_gamification_daily ORDER BY date DESC LIMIT 90`
+    );
+    const daily = rows.map(r => ({
+      date: r.date.toISOString().split('T')[0], // YYYY-MM-DD
+      count: r.count,
+      eur: Number(r.eur)
+    }));
+    res.json({ daily });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/gamification/init?key=API_SECRET — initialize gamification config (admin only)
+// Generates a new secret_key for PC overlay sync
+app.post('/api/gamification/init', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    // Check if already initialized
+    const [existing] = await pool.query('SELECT id FROM crm_gamification_config WHERE id = 1');
+
+    if (existing) {
+      // Already exists — return current secret
+      const [row] = await pool.query('SELECT crm_url, secret_key FROM crm_gamification_config WHERE id = 1');
+      return res.json({
+        message: 'Config already initialized',
+        crm_url: row.crm_url,
+        secret_key: row.secret_key
+      });
+    }
+
+    // Generate new 32-char base64url secret
+    const secretBytes = crypto.randomBytes(24);
+    const secretKey = secretBytes.toString('base64url');
+
+    // Store config with CRM URL (to help overlay connect back)
+    const crmUrl = `https://${req.get('host')}`;
+    await pool.query(
+      'INSERT INTO crm_gamification_config (id, crm_url, secret_key) VALUES (1, ?, ?)',
+      [crmUrl, secretKey]
+    );
+
+    res.json({
+      message: 'Config initialized',
+      crm_url: crmUrl,
+      secret_key: secretKey,
+      instruction: 'Copy the secret_key to gamification-config.json on your PC'
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
