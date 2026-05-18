@@ -1589,48 +1589,47 @@ app.get('/q/:token', async (req, res) => {
   const alreadyAccepted = status === 'accepted';
   const alreadyDeclined = status === 'declined';
   const actionBar = alreadyAccepted
-    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:14px;padding:24px 28px;text-align:center;margin-top:32px"><div style="font-size:28px;margin-bottom:8px">✓</div><div style="font-weight:800;color:#16a34a;font-size:18px;margin-bottom:6px">Verbindlich angenommen</div><div style="color:#5F5A55;font-size:13.5px;line-height:1.6">Vielen Dank! Es wird sich kein Zahlungsbetrag fällig, bevor wir gemeinsam einen Starttermin festgelegt haben.<br>Wir melden uns in Kürze zur Terminvereinbarung.</div></div>`
+    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:14px;padding:28px 32px;text-align:center;margin-top:32px"><div style="font-size:32px;margin-bottom:10px">🎉</div><div style="font-weight:800;color:#16a34a;font-size:19px;margin-bottom:8px">Perfekt — wir legen los!</div><div style="color:#5F5A55;font-size:14px;line-height:1.7">Vielen Dank für Ihr Vertrauen!<br>Wir melden uns in Kürze, um gemeinsam Ihren Starttermin festzulegen.<br><span style="color:#9A9490;font-size:13px">Keine Zahlung jetzt — erst nach Starttermin-Bestätigung.</span></div></div>`
     : alreadyDeclined
     ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-weight:700;color:#dc2626;font-size:16px">Angebot abgelehnt</div></div>`
     : `<div style="margin-top:40px" id="action-area">
-        <div style="background:#F8F5F0;border:1.5px solid #E8E3DC;border-radius:14px;padding:28px 32px">
-          <div style="font-weight:700;font-size:15px;color:#1A1714;margin-bottom:4px">Angebot verbindlich annehmen</div>
-          <div style="font-size:13px;color:#8A8480;margin-bottom:20px;line-height:1.6">Kein Zahlungseingang bei Annahme — die Anzahlung wird erst nach gemeinsam vereinbartem Starttermin fällig.</div>
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-size:12.5px;font-weight:600;color:#6B6560;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Ihr Name *</label>
-            <input id="signer-name" type="text" placeholder="Vor- und Nachname" style="width:100%;padding:11px 14px;border:1.5px solid #D8D4CE;border-radius:9px;font-size:14px;color:#1A1714;background:white;outline:none;box-sizing:border-box" oninput="checkReady()"/>
+        <div style="background:linear-gradient(135deg,#F8F5F0 0%,#F3EFE8 100%);border:1.5px solid #E8E3DC;border-radius:16px;padding:28px 32px">
+          <div style="display:inline-block;background:#EAF5EA;color:#16a34a;font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;margin-bottom:14px;letter-spacing:.04em">Keine Zahlung jetzt</div>
+          <div style="font-weight:800;font-size:18px;color:#1A1714;margin-bottom:6px;letter-spacing:-.01em">Bereit loszulegen?</div>
+          <div style="font-size:13.5px;color:#6B6560;margin-bottom:22px;line-height:1.65">Tragen Sie Ihren Namen ein — wir melden uns dann persönlich, um gemeinsam Ihren Starttermin festzulegen. Die Anzahlung wird erst nach diesem Gespräch fällig.</div>
+          <div style="margin-bottom:20px">
+            <input id="signer-name" type="text" placeholder="Ihr Name" style="width:100%;padding:13px 16px;border:1.5px solid #D8D4CE;border-radius:10px;font-size:15px;color:#1A1714;background:white;outline:none;box-sizing:border-box;transition:border-color .15s" oninput="checkReady()" onfocus="this.style.borderColor='#141210'" onblur="this.style.borderColor='#D8D4CE'"/>
           </div>
-          <label style="display:flex;align-items:flex-start;gap:12px;cursor:pointer;margin-bottom:22px">
-            <input type="checkbox" id="confirm-check" onchange="checkReady()" style="margin-top:3px;width:16px;height:16px;flex-shrink:0;cursor:pointer"/>
-            <span style="font-size:13px;color:#5F5A55;line-height:1.55">Ich nehme dieses Angebot verbindlich an. Mir ist bewusst, dass keine Zahlung bei Annahme anfällt — der Starttermin wird gemeinsam festgelegt, erst danach wird die Anzahlung fällig.</span>
-          </label>
-          <div style="display:flex;gap:12px;flex-wrap:wrap">
-            <button onclick="doAccept()" id="btn-accept" disabled style="background:#141210;color:white;border:none;border-radius:10px;padding:14px 36px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:-.01em;opacity:.35;transition:opacity .15s">Verbindlich annehmen →</button>
-            <button onclick="doDecline()" id="btn-decline" style="background:none;color:#9A9490;border:1.5px solid #D8D4CE;border-radius:10px;padding:14px 24px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s">Ablehnen</button>
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+            <button onclick="doAccept()" id="btn-accept" disabled style="background:#141210;color:white;border:none;border-radius:10px;padding:14px 36px;font-size:15px;font-weight:700;cursor:default;letter-spacing:-.01em;opacity:.3;transition:all .2s;flex-shrink:0">Ja, ich will starten →</button>
+            <button onclick="doDecline()" id="btn-decline" style="background:none;color:#B0ABA5;border:none;font-size:13px;font-weight:400;cursor:pointer;padding:4px 0;text-decoration:underline;text-underline-offset:3px">Kein Interesse</button>
           </div>
+          <div style="margin-top:16px;font-size:12px;color:#B0ABA5;line-height:1.5">Ihr Name dient als Bestätigung Ihrer Anfrage. Kein Risiko — Sie können jederzeit absagen, solange wir keinen Starttermin vereinbart haben.</div>
         </div>
       </div>
       <script>
       function checkReady(){
-        const ok=document.getElementById('signer-name').value.trim().length>1&&document.getElementById('confirm-check').checked;
+        const ok=document.getElementById('signer-name').value.trim().length>1;
         const btn=document.getElementById('btn-accept');
-        btn.disabled=!ok;btn.style.opacity=ok?'1':'.35';btn.style.cursor=ok?'pointer':'default';
+        btn.disabled=!ok;btn.style.opacity=ok?'1':'.3';btn.style.cursor=ok?'pointer':'default';
+        if(ok){btn.style.transform='scale(1.01)';}else{btn.style.transform='scale(1)';}
       }
       async function doAccept(){
         const name=document.getElementById('signer-name').value.trim();
-        if(!name||!document.getElementById('confirm-check').checked)return;
-        document.getElementById('btn-accept').disabled=true;document.getElementById('btn-accept').style.opacity='.5';
-        document.getElementById('btn-decline').disabled=true;
+        if(!name)return;
+        document.getElementById('btn-accept').textContent='…';
+        document.getElementById('btn-accept').disabled=true;document.getElementById('btn-accept').style.opacity='.6';
+        document.getElementById('btn-decline').style.display='none';
         const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept',name})});
         const j=await r.json();
-        if(j.ok){location.reload();}else{document.getElementById('btn-accept').disabled=false;document.getElementById('btn-accept').style.opacity='1';document.getElementById('btn-decline').disabled=false;alert('Fehler: '+j.error);}
+        if(j.ok){location.reload();}else{document.getElementById('btn-accept').textContent='Ja, ich will starten →';document.getElementById('btn-accept').disabled=false;document.getElementById('btn-accept').style.opacity='1';document.getElementById('btn-decline').style.display='';alert('Fehler: '+j.error);}
       }
       async function doDecline(){
-        if(!confirm('Möchten Sie das Angebot wirklich ablehnen?'))return;
-        document.getElementById('btn-decline').disabled=true;document.getElementById('btn-decline').style.opacity='.5';
+        if(!confirm('Schade! Möchten Sie das Angebot wirklich ablehnen?'))return;
+        document.getElementById('btn-decline').style.opacity='.4';
         const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'decline'})});
         const j=await r.json();
-        if(j.ok){location.reload();}else{document.getElementById('btn-decline').disabled=false;document.getElementById('btn-decline').style.opacity='1';alert('Fehler: '+j.error);}
+        if(j.ok){location.reload();}else{document.getElementById('btn-decline').style.opacity='1';alert('Fehler: '+j.error);}
       }
       </script>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
