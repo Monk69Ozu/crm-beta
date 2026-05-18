@@ -1191,9 +1191,9 @@ const DEFAULT_QUOTE_SETTINGS = {
   bic:'',
   bankName:'',
   defaultIntro:'vielen Dank für das angenehme Gespräch und Ihr Interesse an einer Zusammenarbeit. Auf Basis Ihrer Anforderungen haben wir folgendes Angebot für Sie zusammengestellt.',
-  defaultTerms:'Dieses Angebot ist 30 Tage gültig.\nZahlung 14 Tage netto.\nAlle Preise zzgl. der gesetzlichen USt.',
+  defaultTerms:'Dieses Angebot ist 30 Tage gültig.\nAnzahlung 50 % erst nach gemeinsam vereinbartem Projektstart — nicht bei Angebotsannahme.\nRestbetrag nach Fertigstellung, 14 Tage netto.\nAlle Preise zzgl. der gesetzlichen USt.',
   defaultFooter:'Wir freuen uns auf eine erfolgreiche Zusammenarbeit.',
-  defaultNextSteps:'1. Sie geben uns Bescheid, ob das Angebot passt — gerne auch mit Anpassungswünschen.\n2. Nach Ihrer Zusage starten wir mit dem Kick-off-Gespräch.\n3. Wir senden Ihnen einen detaillierten Projektplan und legen los.',
+  defaultNextSteps:'1. Sie nehmen das Angebot an — kein Zahlungseingang nötig.\n2. Wir legen gemeinsam einen Starttermin fest.\n3. Anzahlung 50 % nach Starttermin-Bestätigung.\n4. Fertigstellung: 1 Woche nach Projektstart.',
   accentColor:'#141210',
   taxRate:20,
   currency:'EUR',
@@ -8489,8 +8489,6 @@ function GamificationView({onLoadData, onReset, onRescale}) {
       <div style={{background:'white',borderRadius:12,overflow:'hidden',border:'1px solid rgba(16,185,129,.15)'}}>
         <div style={{padding:'12px 20px',borderBottom:'1px solid rgba(0,0,0,.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <span style={{fontSize:13,fontWeight:700,color:'#141210'}}>Verlauf</span>
-          <button onClick={async()=>{if(!window.confirm('EUR-Werte auf ÷5 korrigieren? (4.000€ → ~800€)\nTask-Anzahl bleibt unverändert.'))return;setResetting(true);try{await onRescale(0.2);await load();}finally{setResetting(false);}}} style={{background:'transparent',border:'1px solid #FEF08A',color:'#A16207',borderRadius:6,padding:'3px 10px',fontSize:11,cursor:'pointer'}}>EUR korrigieren (÷5)</button>
-          <button onClick={async()=>{if(!window.confirm('Alle Gamification-Daten wirklich löschen?'))return;setResetting(true);try{await onReset();await load();}finally{setResetting(false);}}} style={{background:'transparent',border:'1px solid #D1FAE5',color:'#9CA3AF',borderRadius:6,padding:'3px 10px',fontSize:11,cursor:'pointer'}}>{resetting?'…':'Daten zurücksetzen'}</button>
         </div>
         {daily.length === 0 ? (
           <div style={{padding:'28px 20px',textAlign:'center',color:'#B0ABA5',fontSize:13}}>Noch keine Daten — der nächste Task füllt das hier.</div>

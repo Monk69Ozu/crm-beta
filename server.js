@@ -1511,7 +1511,7 @@ app.delete('/api/quote-links/:token', requireAuth, async (req, res) => {
 
 app.post('/q/:token/respond', async (req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'DB not ready' });
-  const { action } = req.body; // 'accept' | 'decline'
+  const { action, name } = req.body; // 'accept' | 'decline', name (optional)
   if (!['accept','decline'].includes(action)) return res.status(400).json({ error: 'invalid action' });
   const status = action === 'accept' ? 'accepted' : 'declined';
   const [result] = await pool.query(
@@ -1519,6 +1519,43 @@ app.post('/q/:token/respond', async (req, res) => {
     [status, req.params.token]
   );
   if (result.affectedRows === 0) return res.status(409).json({ error: 'already responded or not found' });
+
+  // Send email notification to Teodor when quote is accepted
+  if (action === 'accept' && nodemailer && SMTP_HOST && SMTP_USER && SMTP_PASS && RESET_TO) {
+    try {
+      const [qRows] = await pool.query('SELECT quote_json FROM crm_quote_links WHERE token = ?', [req.params.token]);
+      const quote = qRows.length ? (typeof qRows[0].quote_json === 'string' ? JSON.parse(qRows[0].quote_json) : qRows[0].quote_json) : {};
+      const quoteTitle = quote.title || 'Angebot';
+      const quoteNumber = quote.number || '';
+      const firma = quote.contactSnapshot?.firma || '';
+      const acceptedBy = name ? name : (firma || 'Unbekannt');
+      const quoteUrl = `${process.env.APP_URL || ''}/q/${req.params.token}`;
+      const transporter = nodemailer.createTransport({
+        host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465,
+        auth: { user: SMTP_USER, pass: SMTP_PASS },
+        connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 15000,
+      });
+      await transporter.sendMail({
+        from: SMTP_FROM || SMTP_USER,
+        to: RESET_TO,
+        subject: `✓ Angebot angenommen — ${quoteTitle}${quoteNumber ? ' (' + quoteNumber + ')' : ''}`,
+        html: `
+          <div style="font-family:-apple-system,sans-serif;max-width:500px;margin:0 auto">
+            <h2 style="color:#16a34a">✓ Angebot angenommen</h2>
+            <p><strong>${acceptedBy}</strong> hat das Angebot <strong>${quoteTitle}${quoteNumber ? ' (' + quoteNumber + ')' : ''}</strong> verbindlich angenommen.</p>
+            ${firma && firma !== acceptedBy ? `<p>Unternehmen: <strong>${firma}</strong></p>` : ''}
+            <p>Nächster Schritt: Starttermin gemeinsam festlegen.</p>
+            <p><a href="${quoteUrl}" style="background:#141210;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;margin:16px 0">Angebot ansehen →</a></p>
+            <p style="color:#888;font-size:12px">Angenommen am: ${new Date().toLocaleString('de-AT')}</p>
+          </div>
+        `,
+      });
+      console.log(`✓ Quote acceptance email sent for token ${req.params.token}`);
+    } catch (mailErr) {
+      console.error('Quote acceptance email failed:', mailErr.message);
+    }
+  }
+
   res.json({ ok: true, status });
 });
 
@@ -1552,20 +1589,48 @@ app.get('/q/:token', async (req, res) => {
   const alreadyAccepted = status === 'accepted';
   const alreadyDeclined = status === 'declined';
   const actionBar = alreadyAccepted
-    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-size:22px;margin-bottom:6px">✓</div><div style="font-weight:700;color:#16a34a;font-size:16px">Angebot angenommen</div><div style="color:#4ade80;font-size:13px;margin-top:4px">Wir melden uns in Kürze mit den nächsten Schritten.</div></div>`
+    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:14px;padding:24px 28px;text-align:center;margin-top:32px"><div style="font-size:28px;margin-bottom:8px">✓</div><div style="font-weight:800;color:#16a34a;font-size:18px;margin-bottom:6px">Verbindlich angenommen</div><div style="color:#5F5A55;font-size:13.5px;line-height:1.6">Vielen Dank! Es wird sich kein Zahlungsbetrag fällig, bevor wir gemeinsam einen Starttermin festgelegt haben.<br>Wir melden uns in Kürze zur Terminvereinbarung.</div></div>`
     : alreadyDeclined
     ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-weight:700;color:#dc2626;font-size:16px">Angebot abgelehnt</div></div>`
-    : `<div style="margin-top:40px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-        <button onclick="respond('accept')" id="btn-accept" style="background:#141210;color:white;border:none;border-radius:10px;padding:16px 40px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:-.01em;transition:opacity .15s">Angebot annehmen →</button>
-        <button onclick="respond('decline')" id="btn-decline" style="background:none;color:#9A9490;border:1.5px solid #D8D4CE;border-radius:10px;padding:16px 24px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s">Ablehnen</button>
+    : `<div style="margin-top:40px" id="action-area">
+        <div style="background:#F8F5F0;border:1.5px solid #E8E3DC;border-radius:14px;padding:28px 32px">
+          <div style="font-weight:700;font-size:15px;color:#1A1714;margin-bottom:4px">Angebot verbindlich annehmen</div>
+          <div style="font-size:13px;color:#8A8480;margin-bottom:20px;line-height:1.6">Kein Zahlungseingang bei Annahme — die Anzahlung wird erst nach gemeinsam vereinbartem Starttermin fällig.</div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12.5px;font-weight:600;color:#6B6560;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Ihr Name *</label>
+            <input id="signer-name" type="text" placeholder="Vor- und Nachname" style="width:100%;padding:11px 14px;border:1.5px solid #D8D4CE;border-radius:9px;font-size:14px;color:#1A1714;background:white;outline:none;box-sizing:border-box" oninput="checkReady()"/>
+          </div>
+          <label style="display:flex;align-items:flex-start;gap:12px;cursor:pointer;margin-bottom:22px">
+            <input type="checkbox" id="confirm-check" onchange="checkReady()" style="margin-top:3px;width:16px;height:16px;flex-shrink:0;cursor:pointer"/>
+            <span style="font-size:13px;color:#5F5A55;line-height:1.55">Ich nehme dieses Angebot verbindlich an. Mir ist bewusst, dass keine Zahlung bei Annahme anfällt — der Starttermin wird gemeinsam festgelegt, erst danach wird die Anzahlung fällig.</span>
+          </label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <button onclick="doAccept()" id="btn-accept" disabled style="background:#141210;color:white;border:none;border-radius:10px;padding:14px 36px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:-.01em;opacity:.35;transition:opacity .15s">Verbindlich annehmen →</button>
+            <button onclick="doDecline()" id="btn-decline" style="background:none;color:#9A9490;border:1.5px solid #D8D4CE;border-radius:10px;padding:14px 24px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s">Ablehnen</button>
+          </div>
+        </div>
       </div>
       <script>
-      async function respond(action){
-        const btns=document.querySelectorAll('#btn-accept,#btn-decline');
-        btns.forEach(b=>{b.disabled=true;b.style.opacity='.5';});
-        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+      function checkReady(){
+        const ok=document.getElementById('signer-name').value.trim().length>1&&document.getElementById('confirm-check').checked;
+        const btn=document.getElementById('btn-accept');
+        btn.disabled=!ok;btn.style.opacity=ok?'1':'.35';btn.style.cursor=ok?'pointer':'default';
+      }
+      async function doAccept(){
+        const name=document.getElementById('signer-name').value.trim();
+        if(!name||!document.getElementById('confirm-check').checked)return;
+        document.getElementById('btn-accept').disabled=true;document.getElementById('btn-accept').style.opacity='.5';
+        document.getElementById('btn-decline').disabled=true;
+        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept',name})});
         const j=await r.json();
-        if(j.ok){location.reload();}else{btns.forEach(b=>{b.disabled=false;b.style.opacity='1';});alert('Fehler: '+j.error);}
+        if(j.ok){location.reload();}else{document.getElementById('btn-accept').disabled=false;document.getElementById('btn-accept').style.opacity='1';document.getElementById('btn-decline').disabled=false;alert('Fehler: '+j.error);}
+      }
+      async function doDecline(){
+        if(!confirm('Möchten Sie das Angebot wirklich ablehnen?'))return;
+        document.getElementById('btn-decline').disabled=true;document.getElementById('btn-decline').style.opacity='.5';
+        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'decline'})});
+        const j=await r.json();
+        if(j.ok){location.reload();}else{document.getElementById('btn-decline').disabled=false;document.getElementById('btn-decline').style.opacity='1';alert('Fehler: '+j.error);}
       }
       </script>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
