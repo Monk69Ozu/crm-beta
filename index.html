@@ -1250,7 +1250,7 @@ const DEFAULT_ONBOARDING_FORM = {
   published: false,
 };
 
-const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[],leads:[]};
+const DEFAULT_STATE = {sections:DEFAULT_SECTIONS,subsections:DEFAULT_SUBSECTIONS,contacts:SAMPLE_CONTACTS,customFields:[],members:[],todos:[],aiEmployees:[],claudeAccounts:[],claudeTasks:[],quotes:[],quoteSettings:DEFAULT_QUOTE_SETTINGS,invoices:[],invoiceSettings:DEFAULT_INVOICE_SETTINGS,tokens:[],forms:[DEFAULT_ONBOARDING_FORM],formResponses:[],campaigns:[],leads:[],coldCampaigns:[]};
 
 const lbl = {display:'block',fontSize:11,fontWeight:600,color:'#A8A39D',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em'};
 
@@ -6372,6 +6372,203 @@ function BlockEditor({file,campColor,onSaveContent,onRenameFile}){
   );
 }
 
+// ─── COLD OUTREACH VIEW ─────────────────────────────────────────────────────
+const COLD_STATUS = [
+  {id:'aktiv',    label:'Aktiv',        color:'#f59e0b', bg:'rgba(245,158,11,.1)'},
+  {id:'pausiert', label:'Pausiert',     color:'#6B6560', bg:'rgba(107,101,96,.1)'},
+  {id:'fertig',   label:'Abgeschlossen',color:'#22c55e', bg:'rgba(34,197,94,.1)'},
+];
+
+function ColdOutreachView({campaigns, onUpdate}){
+  const [showNew, setShowNew] = React.useState(false);
+  const [form, setForm] = React.useState({name:'',zielgruppe:'',notizen:''});
+  const [detail, setDetail] = React.useState(null); // campaign id
+
+  const save = () => {
+    if(!form.name.trim()) return;
+    const c = {id:uid(), name:form.name.trim(), zielgruppe:form.zielgruppe.trim(), notizen:form.notizen.trim(), status:'aktiv', createdAt:new Date().toISOString(), csvFiles:[]};
+    onUpdate([...(campaigns||[]), c]);
+    setForm({name:'',zielgruppe:'',notizen:''});
+    setShowNew(false);
+    setDetail(c.id);
+  };
+
+  const updateCamp = (id, patch) => onUpdate((campaigns||[]).map(c=>c.id===id?{...c,...patch}:c));
+  const deleteCamp = (id) => { if(!confirm('Kampagne löschen?'))return; onUpdate((campaigns||[]).filter(c=>c.id!==id)); if(detail===id)setDetail(null); };
+
+  const addCSV = (campId, file) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const content = e.target.result;
+      const lines = content.split('\n').filter(l=>l.trim());
+      const count = Math.max(0, lines.length - 1);
+      const f = {id:uid(), name:file.name, size:file.size, count, uploadedAt:new Date().toISOString(), dataUrl:'data:text/csv;base64,'+btoa(unescape(encodeURIComponent(content)))};
+      updateCamp(campId, {csvFiles:[...((campaigns||[]).find(c=>c.id===campId)?.csvFiles||[]), f]});
+    };
+    reader.readAsText(file);
+  };
+
+  const deleteCSV = (campId, fileId) => {
+    if(!confirm('CSV-Datei entfernen?'))return;
+    updateCamp(campId, {csvFiles:((campaigns||[]).find(c=>c.id===campId)?.csvFiles||[]).filter(f=>f.id!==fileId)});
+  };
+
+  const downloadCSV = (f) => {
+    const a = document.createElement('a');
+    a.href = f.dataUrl;
+    a.download = f.name;
+    a.click();
+  };
+
+  const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+  const fmtSize = b => b < 1024*1024 ? (b/1024).toFixed(0)+' KB' : (b/1024/1024).toFixed(1)+' MB';
+
+  const activeCamp = detail ? (campaigns||[]).find(c=>c.id===detail) : null;
+
+  if(activeCamp) return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:'10px 24px',background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',display:'flex',gap:12,alignItems:'center',flexShrink:0}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setDetail(null)}>← Zurück</button>
+        <div style={{flex:1}}>
+          <span style={{fontWeight:700,fontSize:15}}>{activeCamp.name}</span>
+          {activeCamp.zielgruppe&&<span style={{fontSize:12,color:'#A8A39D',marginLeft:10}}>{activeCamp.zielgruppe}</span>}
+        </div>
+        <select value={activeCamp.status} onChange={e=>updateCamp(activeCamp.id,{status:e.target.value})}
+          style={{fontSize:12,padding:'5px 10px',borderRadius:7,border:'1.5px solid rgba(0,0,0,.12)',background:'white',cursor:'pointer',width:'auto'}}>
+          {COLD_STATUS.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
+        <button className="btn btn-danger btn-sm" onClick={()=>deleteCamp(activeCamp.id)}>Löschen</button>
+      </div>
+      <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
+        {/* Notizen */}
+        {(activeCamp.notizen||'').trim()&&(
+          <div style={{background:'white',borderRadius:12,border:'1px solid rgba(0,0,0,.08)',padding:'16px 20px'}}>
+            <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Notizen</div>
+            <div style={{fontSize:13.5,color:'#3F3A35',lineHeight:1.6,whiteSpace:'pre-wrap'}}>{activeCamp.notizen}</div>
+          </div>
+        )}
+        {/* CSV Upload */}
+        <div style={{background:'white',borderRadius:12,border:'1px solid rgba(0,0,0,.08)',padding:'16px 20px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
+            <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>CSV-Dateien</div>
+            <label style={{cursor:'pointer'}}>
+              <input type="file" accept=".csv" style={{display:'none'}} onChange={e=>{if(e.target.files[0])addCSV(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
+              <span className="btn btn-primary btn-sm">+ CSV hochladen</span>
+            </label>
+          </div>
+          {(activeCamp.csvFiles||[]).length===0?(
+            <label style={{display:'block',border:'2px dashed rgba(0,0,0,.12)',borderRadius:10,padding:'32px',textAlign:'center',cursor:'pointer',color:'#B0ABA5'}}>
+              <input type="file" accept=".csv" style={{display:'none'}} onChange={e=>{if(e.target.files[0])addCSV(activeCamp.id,e.target.files[0]);e.target.value='';}}/>
+              <div style={{fontSize:28,marginBottom:8,opacity:.4}}>📄</div>
+              <div style={{fontSize:13,fontWeight:500}}>CSV hier ablegen oder klicken</div>
+              <div style={{fontSize:12,marginTop:4}}>Bereinigte Lead-Liste aus dem Apify-Export</div>
+            </label>
+          ):(
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {(activeCamp.csvFiles||[]).map(f=>(
+                <div key={f.id} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',background:'#F8F7F5',borderRadius:9}}>
+                  <span style={{fontSize:16}}>📄</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</div>
+                    <div style={{fontSize:11,color:'#A8A39D',marginTop:2}}>{f.count.toLocaleString('de-AT')} Leads · {fmtSize(f.size)} · Hochgeladen {fmtDate(f.uploadedAt)}</div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>downloadCSV(f)}>⬇ Download</button>
+                  <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={()=>deleteCSV(activeCamp.id,f.id)}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Stats */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
+          {[
+            {label:'Leads gesamt', value:(activeCamp.csvFiles||[]).reduce((s,f)=>s+f.count,0).toLocaleString('de-AT'), icon:'👥'},
+            {label:'CSV-Dateien',  value:(activeCamp.csvFiles||[]).length, icon:'📂'},
+            {label:'Erstellt',     value:fmtDate(activeCamp.createdAt), icon:'📅'},
+          ].map(s=>(
+            <div key={s.label} style={{background:'white',borderRadius:12,border:'1px solid rgba(0,0,0,.08)',padding:'14px 16px'}}>
+              <div style={{fontSize:20,marginBottom:6}}>{s.icon}</div>
+              <div style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>{s.value}</div>
+              <div style={{fontSize:11,color:'#A8A39D',marginTop:2}}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:'10px 24px',background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',display:'flex',gap:12,alignItems:'center',flexShrink:0}}>
+        <div style={{flex:1}}/>
+        <button className="btn btn-primary" onClick={()=>setShowNew(v=>!v)}>+ Neue Kampagne</button>
+      </div>
+      {showNew&&(
+        <div style={{padding:'20px 24px',background:'#FAFAF8',borderBottom:'1px solid rgba(0,0,0,.07)'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12,maxWidth:680}}>
+            <div>
+              <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Kampagnen-Name *</label>
+              <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="z.B. USA Cleaning — Welle 1" autoFocus
+                onKeyDown={e=>e.key==='Enter'&&save()}/>
+            </div>
+            <div>
+              <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe</label>
+              <input value={form.zielgruppe} onChange={e=>setForm(f=>({...f,zielgruppe:e.target.value}))} placeholder="z.B. Reinigungsfirmen USA, 1–10 MA"/>
+            </div>
+          </div>
+          <div style={{maxWidth:680,marginBottom:12}}>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Notizen (optional)</label>
+            <textarea value={form.notizen} onChange={e=>setForm(f=>({...f,notizen:e.target.value}))} placeholder="Sequenz-Tool, Domain-Rotation, Besonderheiten…" style={{minHeight:60}}/>
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-primary" onClick={save}>Erstellen</button>
+            <button className="btn btn-ghost" onClick={()=>setShowNew(false)}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+      <div style={{flex:1,overflowY:'auto',padding:28}}>
+        {(campaigns||[]).length===0&&!showNew?(
+          <div style={{textAlign:'center',padding:'80px 20px',color:'#C8C3BD'}}>
+            <div style={{fontSize:52,marginBottom:16,opacity:.4}}>📨</div>
+            <div style={{fontSize:16,fontWeight:600,color:'#C0BBB5',marginBottom:8}}>Noch keine Kampagne</div>
+            <div style={{fontSize:13,lineHeight:1.6,marginBottom:24}}>Erstelle eine Kampagne und lade die bereinigte CSV-Datei hoch.<br/>Jede Kampagne hat ihren eigenen Status und ihre eigenen Leads.</div>
+            <button className="btn btn-primary" onClick={()=>setShowNew(true)}>+ Erste Kampagne erstellen</button>
+          </div>
+        ):(
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
+            {(campaigns||[]).map(c=>{
+              const st = COLD_STATUS.find(s=>s.id===c.status)||COLD_STATUS[0];
+              const totalLeads = (c.csvFiles||[]).reduce((s,f)=>s+f.count,0);
+              return(
+                <div key={c.id} onClick={()=>setDetail(c.id)}
+                  style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',boxShadow:'0 1px 4px rgba(0,0,0,.05)',cursor:'pointer',overflow:'hidden',transition:'all .15s'}}
+                  onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 6px 20px rgba(0,0,0,.1)';}}
+                  onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)';e.currentTarget.style.boxShadow='0 1px 4px rgba(0,0,0,.05)';}}>
+                  <div style={{height:4,background:st.color}}/>
+                  <div style={{padding:'16px 18px 14px'}}>
+                    <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:10}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:14,fontWeight:700,color:'#141210',lineHeight:1.3}}>{c.name}</div>
+                        {c.zielgruppe&&<div style={{fontSize:11.5,color:'#A8A39D',marginTop:3}}>{c.zielgruppe}</div>}
+                      </div>
+                      <span style={{fontSize:11,fontWeight:600,color:st.color,background:st.bg,borderRadius:99,padding:'3px 8px',whiteSpace:'nowrap',flexShrink:0}}>{st.label}</span>
+                    </div>
+                    <div style={{display:'flex',gap:16,fontSize:12,color:'#6B6560'}}>
+                      <span>👥 {totalLeads>0?totalLeads.toLocaleString('de-AT')+' Leads':'Keine Leads'}</span>
+                      <span>📂 {(c.csvFiles||[]).length} CSV</span>
+                    </div>
+                    <div style={{marginTop:8,fontSize:11,color:'#C0BBB5'}}>Erstellt {fmtDate(c.createdAt)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CampaignsView({campaigns, onUpdate}){
   const [view,setView]=useState('overview'); // 'overview' | 'campaign'
   const [selCamp,setSelCamp]=useState(null);
@@ -8250,6 +8447,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     formResponses: initialData.formResponses || [],
     campaigns: initialData.campaigns || [],
     leads: initialData.leads || [],
+    coldCampaigns: initialData.coldCampaigns || [],
   }));
   const TODOS_VIEW = '__todos__';
   const AI_VIEW = '__ai__';
@@ -8260,6 +8458,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
   const FORMS_VIEW = '__forms__';
   const CAMPAIGNS_VIEW = '__campaigns__';
   const LEADS_VIEW = '__leads__';
+  const COLD_OUTREACH_VIEW = '__cold_outreach__';
   const GAMIFICATION_VIEW = '__gamification__';
   const [activeId,setActiveId]=useState((initialData.sections||DEFAULT_SECTIONS)[0]?.id);
   const [activeSubId,setActiveSubId]=useState(null);
@@ -8362,7 +8561,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     const fresh=await ghCheckForUpdates(cryptoKey);
     if(fresh){
       skipNextSaveRef.current=true;
-      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[], leads:fresh.leads||[]}));
+      setState(s=>({...fresh, sections:fresh.sections||DEFAULT_SECTIONS, subsections:fresh.subsections||DEFAULT_SUBSECTIONS, customFields:fresh.customFields||[], members:fresh.members||[], todos:fresh.todos||[], aiEmployees:fresh.aiEmployees||[], claudeAccounts:fresh.claudeAccounts||[], claudeTasks:fresh.claudeTasks||[], quotes:fresh.quotes||[], quoteSettings:{...DEFAULT_QUOTE_SETTINGS, ...(fresh.quoteSettings||{})}, invoices:fresh.invoices||[], invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(fresh.invoiceSettings||{})}, tokens:fresh.tokens||[], forms:fresh.forms&&fresh.forms.length?fresh.forms:[DEFAULT_ONBOARDING_FORM], formResponses:fresh.formResponses||[], campaigns:fresh.campaigns||[], leads:fresh.leads||[], coldCampaigns:fresh.coldCampaigns||[]}));
       return true;
     }
     return false;
@@ -8517,6 +8716,17 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Leads</span>
               {newCount>0&&<span style={{fontSize:10,fontWeight:700,color:'#22c55e',background:'rgba(34,197,94,.15)',borderRadius:99,padding:'1px 6px'}}>{newCount}</span>}
               {total>0&&!newCount&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{total}</span>}
+            </button>
+          );})()}
+          {/* Cold Outreach */}
+          {(()=>{const isActive=activeId===COLD_OUTREACH_VIEW;const count=(state.coldCampaigns||[]).length;const active=(state.coldCampaigns||[]).filter(c=>c.status==='aktiv').length;return(
+            <button onClick={()=>setActiveId(COLD_OUTREACH_VIEW)} style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:isActive?'rgba(255,255,255,.1)':'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{if(!isActive)e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{if(!isActive)e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:isActive?1:.5}}>📨</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:isActive?600:400,color:isActive?'white':'rgba(255,255,255,.5)',textAlign:'left',letterSpacing:'-0.01em'}}>Cold Outreach</span>
+              {active>0&&<span style={{fontSize:10,fontWeight:700,color:'#f59e0b',background:'rgba(245,158,11,.15)',borderRadius:99,padding:'1px 6px'}}>{active}</span>}
+              {count>0&&!active&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{count}</span>}
             </button>
           );})()}
           {/* Formulare */}
@@ -8676,6 +8886,16 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             onUpdateForms={forms=>upd({forms})}
             onUpdateResponses={formResponses=>upd({formResponses})}
           />
+        </>) : activeId === COLD_OUTREACH_VIEW ? (<>
+          <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+            <div style={{flex:1}}>
+              <h1 style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>📨 Cold Outreach</h1>
+              <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>
+                {(state.coldCampaigns||[]).filter(c=>c.status==='aktiv').length} aktiv · {(state.coldCampaigns||[]).reduce((s,c)=>s+(c.csvFiles||[]).reduce((a,f)=>a+f.count,0),0).toLocaleString('de-AT')} Leads gesamt
+              </div>
+            </div>
+          </div>
+          <ColdOutreachView campaigns={state.coldCampaigns||[]} onUpdate={coldCampaigns=>upd({coldCampaigns})}/>
         </>) : activeId === TOKENS_VIEW ? (<>
           <div style={{background:'white',borderBottom:'1px solid rgba(0,0,0,.07)',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
             <div style={{flex:1}}>
@@ -8896,7 +9116,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     {modal==='invoiceSettings'&&<InvoiceSettingsModal quoteSettings={state.quoteSettings} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} onSave={(qs,is_)=>upd({quoteSettings:{...state.quoteSettings,...qs},invoiceSettings:{...state.invoiceSettings,...is_}})} onClose={()=>setModal(null)}/>}
     {modal==='tokenUpdate'&&<TokenUpdateModal cryptoKey={cryptoKey} currentState={state} onSaved={()=>setModal(null)} onClose={()=>setModal(null)}/>}
     {modal==='changePassword'&&<ChangePasswordModal cryptoKey={cryptoKey} onClose={()=>setModal(null)}/>}
-    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[],leads:data.leads||[]}));}} onClose={()=>setModal(null)}/>}
+    {modal==='snapshots'&&<SnapshotRestoreModal cryptoKey={cryptoKey} onRestore={data=>{skipNextSaveRef.current=true;setState(s=>({...s,...data,subsections:data.subsections||DEFAULT_SUBSECTIONS,members:data.members||[],todos:data.todos||[],aiEmployees:data.aiEmployees||[],claudeAccounts:data.claudeAccounts||[],claudeTasks:data.claudeTasks||[],quotes:data.quotes||[],quoteSettings:{...DEFAULT_QUOTE_SETTINGS,...(data.quoteSettings||{})},invoices:data.invoices||[],invoiceSettings:{...DEFAULT_INVOICE_SETTINGS,...(data.invoiceSettings||{})},tokens:data.tokens||[],forms:data.forms&&data.forms.length?data.forms:[DEFAULT_ONBOARDING_FORM],formResponses:data.formResponses||[],campaigns:data.campaigns||[],leads:data.leads||[],coldCampaigns:data.coldCampaigns||[]}));}} onClose={()=>setModal(null)}/>}
     {modal==='importInvoice'&&<InvoiceImportModal contacts={state.contacts} invoiceSettings={state.invoiceSettings||DEFAULT_INVOICE_SETTINGS} quoteSettings={state.quoteSettings} initialData={jarvisDraft} onImport={(inv,newContact)=>{const invs=[...(state.invoices||[]),inv];const ctcts=newContact?[...state.contacts,newContact]:state.contacts;const newInvSettings=newContact?state.invoiceSettings:{...state.invoiceSettings||DEFAULT_INVOICE_SETTINGS,invoiceCounter:((state.invoiceSettings||DEFAULT_INVOICE_SETTINGS).invoiceCounter||1)+1};upd({invoices:invs,contacts:ctcts,invoiceSettings:newInvSettings});setJarvisDraft(null);}} onClose={()=>{setModal(null);setJarvisDraft(null);}}/>}
     {editingQuote && <QuoteEditor
       quote={editingQuote}
