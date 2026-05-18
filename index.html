@@ -8444,17 +8444,17 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     claudeAccounts: initialData.claudeAccounts || [],
     claudeTasks: initialData.claudeTasks || [],
     quotes: (()=>{
-      const existing=initialData.quotes||[];
-      if(existing.some(q=>q.id==='seed-constanze-quote-v1'))return existing;
+      const existing=(initialData.quotes||[]).filter(q=>q.id!=='seed-constanze-quote-v1');
+      if(existing.some(q=>q.id==='seed-constanze-quote-v2'))return existing;
       const qItems=[
         {id:'sq-h1',type:'heading',description:'Website fotostube.at',quantity:1,unitPrice:0},
-        {id:'sq-i1',type:'item',description:'One Pager — Design & Entwicklung\nHauptseite mit vollständigem Layout, Animationen, mobiloptimiert, Next.js',quantity:1,unitPrice:790},
-        {id:'sq-i2',type:'item',description:'6 Projekt-Unterseiten\nJe eine Seite pro Projekt — einheitliches Design, Galerie, Projektbeschreibung',quantity:6,unitPrice:83.33},
+        {id:'sq-i1',type:'item',description:'One Pager — Design & Entwicklung\nHauptseite mit vollständigem Layout, Animationen, mobiloptimiert, Next.js',quantity:1,unitPrice:700},
+        {id:'sq-i2',type:'item',description:'6 Projekt-Unterseiten\nJe eine Seite pro Projekt — einheitliches Design, Galerie, Projektbeschreibung',quantity:6,unitPrice:100},
         {id:'sq-i3',type:'item',description:'Grundlegende SEO\nMeta-Tags, Sitemap, Google Search Console, Alt-Texte, Ladegeschwindigkeit',quantity:1,unitPrice:100},
         {id:'sq-i4',type:'item',description:'Zufriedenheitsgarantie\nWir überarbeiten so lange bis du zu 100% zufrieden bist — ohne Aufpreis',quantity:1,unitPrice:0},
       ];
       return [...existing,{
-        id:'seed-constanze-quote-v1',
+        id:'seed-constanze-quote-v2',
         number:'AN-2026-001',
         status:'entwurf',
         contactId:null,
