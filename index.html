@@ -4610,6 +4610,19 @@ function QuotePreview({quote, settings, onClose, onMarkSent}){
   const fmtD = iso => iso ? new Date(iso).toLocaleDateString('de-AT',{day:'2-digit',month:'long',year:'numeric'}) : '';
   const status = QUOTE_STATUSES.find(s=>s.key===quote.status) || QUOTE_STATUSES[0];
   const greeting = quote.contactSnapshot?.ansprechpartner ? `Sehr geehrte/r ${quote.contactSnapshot.ansprechpartner},` : 'Sehr geehrte Damen und Herren,';
+  const [linkPopup, setLinkPopup] = React.useState(null); // null | {url, copied}
+  const [linkBusy, setLinkBusy] = React.useState(false);
+  const generateLink = async () => {
+    setLinkBusy(true);
+    try {
+      const r = await fetch('/api/quote-links', {method:'POST', headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`,'Content-Type':'application/json'}, body:JSON.stringify({quote})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error||r.status);
+      setLinkPopup({url:j.url, copied:false});
+      if(quote.status==='entwurf') onMarkSent && onMarkSent();
+    } catch(e) { alert('Fehler: '+e.message); }
+    setLinkBusy(false);
+  };
 
   // Group items by heading for sectioned display
   const sections = [];
@@ -4655,9 +4668,24 @@ ${settings.companyName || ''}`;
           <span style={{color:status.color,fontWeight:600,padding:'2px 8px',background:'rgba(255,255,255,0.1)',borderRadius:99,fontSize:11}}>{status.label}</span>
         </div>
         <button className="btn btn-ghost btn-sm" onClick={handleEmail} style={{color:'white',borderColor:'rgba(255,255,255,0.2)'}}><Icons.Mail/>Per Email senden</button>
+        <button className="btn btn-ghost btn-sm" onClick={generateLink} disabled={linkBusy} style={{color:'#4ade80',borderColor:'rgba(74,222,128,0.3)',fontWeight:700}}>🔗 {linkBusy?'…':'Annehmen-Link'}</button>
         <button className="btn btn-primary btn-sm" onClick={handlePrint}><Icons.Print/>Drucken / PDF</button>
         <button onClick={onClose} style={{background:'rgba(255,255,255,0.1)',border:'none',borderRadius:8,padding:8,color:'white',lineHeight:0,cursor:'pointer'}}><Icons.Close/></button>
       </div>
+
+      {linkPopup && (
+        <div style={{position:'fixed',inset:0,zIndex:2000,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>setLinkPopup(null)}>
+          <div style={{background:'white',borderRadius:16,padding:32,maxWidth:480,width:'100%',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontWeight:800,fontSize:17,color:'#141210',marginBottom:6}}>🔗 Annehmen-Link generiert</div>
+            <div style={{fontSize:13,color:'#6B6560',marginBottom:16,lineHeight:1.5}}>Schick diesen Link an deine Kundin. Sie kann das Angebot direkt online annehmen — ohne Login.</div>
+            <div style={{background:'#F8F5F0',borderRadius:10,padding:'12px 16px',fontFamily:'monospace',fontSize:12,color:'#3F3A35',wordBreak:'break-all',marginBottom:16,border:'1px solid #E8E3DC'}}>{linkPopup.url}</div>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={()=>{navigator.clipboard.writeText(linkPopup.url).then(()=>setLinkPopup(p=>({...p,copied:true})));}} style={{flex:1,background:linkPopup.copied?'#16a34a':'#141210',color:'white',border:'none',borderRadius:10,padding:'12px 20px',fontWeight:700,fontSize:14,cursor:'pointer',transition:'background .2s'}}>{linkPopup.copied?'✓ Kopiert!':'Link kopieren'}</button>
+              <button onClick={()=>setLinkPopup(null)} style={{background:'#F0EDE8',color:'#6B6560',border:'none',borderRadius:10,padding:'12px 16px',fontWeight:600,fontSize:13,cursor:'pointer'}}>Schließen</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="quote-paper">
         {/* === COVER === */}

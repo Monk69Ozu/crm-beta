@@ -285,6 +285,16 @@ async function initDb() {
         PRIMARY KEY (id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_quote_links (
+        token        VARCHAR(64)  NOT NULL,
+        quote_json   LONGTEXT     NOT NULL,
+        status       VARCHAR(16)  NOT NULL DEFAULT 'pending',
+        created_at   DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        responded_at DATETIME     NULL,
+        PRIMARY KEY (token)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // ── BACKUP HARDENING ───────────────────────────────────────────
     // Add tier column so we can keep different retention windows.
     // Existing rows get tier='legacy' (kept indefinitely — safe).
@@ -1463,6 +1473,147 @@ try {
   INDEX_HTML_ERR = 'Could not load index.html: ' + e.message;
   console.error('❌  ' + INDEX_HTML_ERR);
 }
+
+// ── Public Quote Links ───────────────────────────────────────────
+app.post('/api/quote-links', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'DB not ready' });
+  const { quote } = req.body;
+  if (!quote || !quote.id) return res.status(400).json({ error: 'quote required' });
+  const token = nodeCrypto.randomBytes(24).toString('base64url');
+  await pool.query('INSERT INTO crm_quote_links (token, quote_json) VALUES (?, ?)', [token, JSON.stringify(quote)]);
+  const url = `${process.env.APP_URL || ''}/q/${token}`;
+  res.json({ token, url });
+});
+
+app.get('/api/quote-links/:token', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'DB not ready' });
+  const [rows] = await pool.query('SELECT status, created_at, responded_at FROM crm_quote_links WHERE token = ?', [req.params.token]);
+  if (!rows.length) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+});
+
+app.delete('/api/quote-links/:token', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'DB not ready' });
+  await pool.query('DELETE FROM crm_quote_links WHERE token = ?', [req.params.token]);
+  res.json({ ok: true });
+});
+
+app.post('/q/:token/respond', async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'DB not ready' });
+  const { action } = req.body; // 'accept' | 'decline'
+  if (!['accept','decline'].includes(action)) return res.status(400).json({ error: 'invalid action' });
+  const status = action === 'accept' ? 'accepted' : 'declined';
+  const [result] = await pool.query(
+    "UPDATE crm_quote_links SET status = ?, responded_at = NOW() WHERE token = ? AND status = 'pending'",
+    [status, req.params.token]
+  );
+  if (result.affectedRows === 0) return res.status(409).json({ error: 'already responded or not found' });
+  res.json({ ok: true, status });
+});
+
+app.get('/q/:token', async (req, res) => {
+  if (!DB_READY) return res.status(503).send('Server nicht bereit');
+  const [rows] = await pool.query('SELECT quote_json, status FROM crm_quote_links WHERE token = ?', [req.params.token]);
+  if (!rows.length) return res.status(404).send('<h2>Angebot nicht gefunden oder abgelaufen.</h2>');
+  const quote = typeof rows[0].quote_json === 'string' ? JSON.parse(rows[0].quote_json) : rows[0].quote_json;
+  const status = rows[0].status;
+  const token = req.params.token;
+  const fmtDate = d => { if(!d) return '—'; const p = d.slice(0,10).split('-'); return `${p[2]}.${p[1]}.${p[0]}`; };
+  const fmtMoney = n => Number(n||0).toLocaleString('de-AT', {minimumFractionDigits:2,maximumFractionDigits:2}) + ' €';
+  const items = (quote.items||[]).filter(i=>i.type!=='heading');
+  const subtotal = items.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.unitPrice)||0),0);
+  const tax = subtotal * (Number(quote.taxRate)||0)/100;
+  const total = subtotal + tax;
+  const itemsHtml = (quote.items||[]).map(it => {
+    if(it.type==='heading') return `<tr><td colspan="4" style="padding:18px 0 6px;font-weight:700;font-size:13px;color:#6B6560;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #E8E3DC">${it.description||''}</td></tr>`;
+    const amt = (Number(it.quantity)||0)*(Number(it.unitPrice)||0);
+    const descLines = (it.description||'').split('\n');
+    return `<tr style="border-bottom:1px solid #F0EDE8">
+      <td style="padding:14px 0;vertical-align:top">
+        <div style="font-weight:600;color:#1A1714;font-size:14px">${descLines[0]||''}</div>
+        ${descLines.slice(1).map(l=>`<div style="font-size:12.5px;color:#8A8480;margin-top:3px">${l}</div>`).join('')}
+      </td>
+      <td style="padding:14px 16px;text-align:center;color:#6B6560;font-size:13px;white-space:nowrap;vertical-align:top">${Number(it.unitPrice)>0?fmtMoney(it.unitPrice):''}</td>
+      <td style="padding:14px 8px;text-align:center;color:#6B6560;font-size:13px;vertical-align:top">${Number(it.unitPrice)>0?'×'+it.quantity:''}</td>
+      <td style="padding:14px 0;text-align:right;font-weight:600;color:#1A1714;font-size:14px;white-space:nowrap;vertical-align:top">${Number(it.unitPrice)>0?fmtMoney(amt):'Inklusive'}</td>
+    </tr>`;
+  }).join('');
+  const alreadyAccepted = status === 'accepted';
+  const alreadyDeclined = status === 'declined';
+  const actionBar = alreadyAccepted
+    ? `<div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-size:22px;margin-bottom:6px">✓</div><div style="font-weight:700;color:#16a34a;font-size:16px">Angebot angenommen</div><div style="color:#4ade80;font-size:13px;margin-top:4px">Wir melden uns in Kürze mit den nächsten Schritten.</div></div>`
+    : alreadyDeclined
+    ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:12px;padding:20px 24px;text-align:center;margin-top:32px"><div style="font-weight:700;color:#dc2626;font-size:16px">Angebot abgelehnt</div></div>`
+    : `<div style="margin-top:40px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <button onclick="respond('accept')" id="btn-accept" style="background:#141210;color:white;border:none;border-radius:10px;padding:16px 40px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:-.01em;transition:opacity .15s">Angebot annehmen →</button>
+        <button onclick="respond('decline')" id="btn-decline" style="background:none;color:#9A9490;border:1.5px solid #D8D4CE;border-radius:10px;padding:16px 24px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s">Ablehnen</button>
+      </div>
+      <script>
+      async function respond(action){
+        const btns=document.querySelectorAll('#btn-accept,#btn-decline');
+        btns.forEach(b=>{b.disabled=true;b.style.opacity='.5';});
+        const r=await fetch('/q/${token}/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+        const j=await r.json();
+        if(j.ok){location.reload();}else{btns.forEach(b=>{b.disabled=false;b.style.opacity='1';});alert('Fehler: '+j.error);}
+      }
+      </script>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Angebot ${quote.number||''} · WebArs</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#F8F5F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1A1714;-webkit-font-smoothing:antialiased}a{color:inherit}
+.wrap{max-width:720px;margin:0 auto;padding:40px 20px 80px}
+.card{background:white;border-radius:16px;padding:40px 44px;box-shadow:0 2px 16px rgba(0,0,0,.06)}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:36px;gap:16px;flex-wrap:wrap}
+.logo{font-size:20px;font-weight:800;letter-spacing:-.03em;color:#141210}
+.badge{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;padding:5px 12px;border-radius:20px;white-space:nowrap}
+.badge-draft{background:#F0EDE8;color:#9A9490}
+.badge-sent{background:#EFF6FF;color:#1d4ed8}
+.badge-accepted{background:#F0FDF4;color:#16a34a}
+.eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#B0ABA5;margin-bottom:6px}
+.quote-title{font-size:26px;font-weight:800;letter-spacing:-.02em;color:#141210;line-height:1.15;margin-bottom:4px}
+.meta{font-size:13px;color:#9A9490}
+.section{margin-top:32px}
+.intro-text{font-size:14.5px;color:#5F5A55;line-height:1.7;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}
+.totals td{padding:6px 0;font-size:13.5px;color:#6B6560}
+.totals .total-row td{padding-top:14px;font-size:17px;font-weight:800;color:#141210;border-top:2px solid #1A1714}
+.terms-text{font-size:13px;color:#8A8480;line-height:1.65;white-space:pre-wrap}
+.steps{list-style:none;counter-reset:steps}
+.steps li{counter-increment:steps;display:flex;gap:14px;margin-bottom:14px;font-size:13.5px;color:#5F5A55;line-height:1.55}
+.steps li::before{content:counter(steps);background:#F0EDE8;color:#6B6560;font-weight:700;font-size:11px;min-width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.footer-note{text-align:center;font-size:13px;color:#B0ABA5;margin-top:40px;line-height:1.6}
+@media(max-width:500px){.card{padding:28px 20px}.header{gap:10px}}
+</style></head><body>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div class="logo">WebArs</div>
+      <span class="badge ${alreadyAccepted?'badge-accepted':status==='declined'?'badge-draft':'badge-sent'}">${alreadyAccepted?'✓ Angenommen':alreadyDeclined?'Abgelehnt':'Angebot'}</span>
+    </div>
+    <div class="eyebrow">Angebot ${quote.number||''}</div>
+    <div class="quote-title">${quote.title||'Angebot'}</div>
+    <div class="meta" style="margin-top:8px">Für: <strong>${quote.contactSnapshot?.firma||''}</strong> · Datum: ${fmtDate(quote.date)} · Gültig bis: <strong>${fmtDate(quote.validUntil)}</strong></div>
+    ${quote.intro ? `<div class="section"><div class="intro-text">${quote.intro}</div></div>` : ''}
+    <div class="section">
+      <table>
+        <thead><tr style="border-bottom:2px solid #1A1714"><th style="text-align:left;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Leistung</th><th style="text-align:center;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700;white-space:nowrap">Einzel</th><th style="text-align:center;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Menge</th><th style="text-align:right;padding-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9A9490;font-weight:700">Gesamt</th></tr></thead>
+        <tbody>${itemsHtml}</tbody>
+      </table>
+      <table class="totals" style="margin-top:16px">
+        <tr><td>Nettobetrag</td><td style="text-align:right">${fmtMoney(subtotal)}</td></tr>
+        ${Number(quote.taxRate)>0?`<tr><td>USt ${quote.taxRate}%</td><td style="text-align:right">${fmtMoney(tax)}</td></tr>`:''}
+        <tr class="total-row"><td>Gesamtbetrag</td><td style="text-align:right">${fmtMoney(total)}</td></tr>
+      </table>
+    </div>
+    ${quote.notes ? `<div class="section"><div class="eyebrow" style="margin-bottom:8px">Hinweise</div><div class="terms-text">${quote.notes}</div></div>` : ''}
+    ${quote.terms ? `<div class="section"><div class="eyebrow" style="margin-bottom:8px">Konditionen</div><div class="terms-text">${quote.terms}</div></div>` : ''}
+    ${quote.nextSteps ? `<div class="section"><div class="eyebrow" style="margin-bottom:12px">Nächste Schritte</div><ol class="steps">${quote.nextSteps.split('\n').filter(l=>l.trim()).map(l=>`<li><span>${l.replace(/^\d+\.\s*/,'')}</span></li>`).join('')}</ol></div>` : ''}
+    ${quote.footer ? `<div class="section" style="padding-top:24px;border-top:1px solid #F0EDE8"><div style="font-size:14px;color:#6B6560;font-style:italic;line-height:1.65">${quote.footer}</div></div>` : ''}
+    ${actionBar}
+  </div>
+  <div class="footer-note">Dieses Angebot wurde von <strong>WebArs e.U.</strong> erstellt.<br>Bei Fragen: <a href="mailto:office@webars.at" style="color:#141210">office@webars.at</a></div>
+</div>
+</body></html>`);
+});
 
 app.get('/', (_req, res) => {
   if (INDEX_HTML_ERR) return res.status(500).send(INDEX_HTML_ERR);
