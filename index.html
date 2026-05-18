@@ -8443,7 +8443,37 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     aiEmployees: initialData.aiEmployees || [],
     claudeAccounts: initialData.claudeAccounts || [],
     claudeTasks: initialData.claudeTasks || [],
-    quotes: initialData.quotes || [],
+    quotes: (()=>{
+      const existing=initialData.quotes||[];
+      if(existing.some(q=>q.id==='seed-constanze-quote-v1'))return existing;
+      const qItems=[
+        {id:'sq-h1',type:'heading',description:'Website fotostube.at',quantity:1,unitPrice:0},
+        {id:'sq-i1',type:'item',description:'One Pager — Design & Entwicklung\nHauptseite mit vollständigem Layout, Animationen, mobiloptimiert, Next.js',quantity:1,unitPrice:790},
+        {id:'sq-i2',type:'item',description:'6 Projekt-Unterseiten\nJe eine Seite pro Projekt — einheitliches Design, Galerie, Projektbeschreibung',quantity:6,unitPrice:83.33},
+        {id:'sq-i3',type:'item',description:'Grundlegende SEO\nMeta-Tags, Sitemap, Google Search Console, Alt-Texte, Ladegeschwindigkeit',quantity:1,unitPrice:100},
+        {id:'sq-i4',type:'item',description:'Zufriedenheitsgarantie\nWir überarbeiten so lange bis du zu 100% zufrieden bist — ohne Aufpreis',quantity:1,unitPrice:0},
+      ];
+      return [...existing,{
+        id:'seed-constanze-quote-v1',
+        number:'AN-2026-001',
+        status:'entwurf',
+        contactId:null,
+        contactSnapshot:{firma:'Constanze Trzebin',ansprechpartner:'Constanze Trzebin',email:'',telefon:'',adresse:'Wien'},
+        title:'Neue Website fotostube.at',
+        date:'2026-05-18',
+        validUntil:'2026-06-01',
+        intro:'Liebe Constanze,\n\nvielen Dank für unser angenehmes Gespräch heute. Es hat mich gefreut, dich besser kennenzulernen — und ich bin überzeugt, dass wir zusammen etwas wirklich Besonderes für fotostube.at schaffen können.\n\nHier ist mein Angebot für deine neue Website.',
+        items:qItems,
+        taxRate:20,
+        discount:0,
+        notes:'Zufriedenheitsgarantie: Überarbeitungen bis zur vollständigen Zufriedenheit inklusive.\nHosting & Domain nicht inkludiert (auf Wunsch Empfehlung möglich).',
+        terms:'Angebot gültig bis 01.06.2026 — damit ich die Planung fixieren kann.\nZahlung: 50% bei Auftragserteilung, 50% bei Projektabschluss.\nAlle Preise zzgl. 20% USt.',
+        footer:'Ich freue mich auf eine erfolgreiche Zusammenarbeit und bin überzeugt, dass deine neue Website genauso hochwertig wird wie deine Fotos.',
+        nextSteps:'1. Angebot bis 01.06.2026 annehmen — damit ich die Planung fixieren kann.\n2. Nach deiner Zusage: Anzahlung (50%) + kurzes Kick-off-Gespräch (30 min).\n3. Projektstart nach Absprache — Fertigstellung in ca. 3–4 Wochen.',
+        sentAt:null,
+        createdAt:'2026-05-18T08:00:00.000Z',
+      }];
+    })(),
     quoteSettings: {...DEFAULT_QUOTE_SETTINGS, ...(initialData.quoteSettings||{})},
     invoices: initialData.invoices || [],
     invoiceSettings: {...DEFAULT_INVOICE_SETTINGS,...(initialData.invoiceSettings||{})},
