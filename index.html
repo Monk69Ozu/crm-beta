@@ -6676,6 +6676,8 @@ function LinkedInOutreachBot(){
       if(config.anthropicKey.trim()) body.anthropicKey = config.anthropicKey;
       if(config.proxy.trim()) body.proxy = config.proxy;
       const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
+      const ct = r.headers.get('content-type')||'';
+      if(!ct.includes('json')) throw new Error('Server noch nicht bereit — bitte Coolify-Deploy abwarten und Seite neu laden.');
       const d = await r.json();
       if(d.error) throw new Error(d.error);
       setServerHasCookies(!!d.hasCookies);
