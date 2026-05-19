@@ -605,6 +605,8 @@ async function loadTOTPSecret(key) {
   try { return await aesDecrypt(key, JSON.parse(raw)); } catch(e) { return null; }
 }
 async function saveEncrypted(key, data) {
+  _isSaving = true;
+  try {
   const dataWithTs = {...data, _savedAt: Date.now()};
   const encrypted = await aesEncrypt(key, dataWithTs);
   try { localStorage.setItem(DATA_KEY, JSON.stringify(encrypted)); } catch(e) { console.warn('[save] localStorage voll:', e); }
@@ -652,6 +654,7 @@ async function saveEncrypted(key, data) {
       }
     }
   }
+  } finally { _isSaving = false; }
 }
 async function loadEncrypted(key) {
   // Try cloud/server first if configured
@@ -753,6 +756,7 @@ let _ghSettings = null;       // {token, repo, path}
 let _ghSha = localStorage.getItem(GH_SHA_KEY) || null; // persisted across reloads
 let _gistId = localStorage.getItem(GH_GIST_KEY) || null; // private Gist ID for Jarvis
 let _ghSyncState = {state:'idle'}; // {state: 'idle'|'ok'|'error', message, at}
+let _isSaving = false;        // true while saveEncrypted is running — blocks cloud polling
 let _notifySync = null;       // hook for UI updates
 
 function setSyncListener(fn) { _notifySync = fn; }
@@ -1013,6 +1017,7 @@ async function ghPushFile(token, repo, path, content, sha = null, message = 'Upd
 // Poll for updates from other team members
 async function ghCheckForUpdates(key) {
   if (!_ghSettings) return null;
+  if (_isSaving) return null; // Nicht während eines laufenden Speichervorgangs überschreiben
   if (SELF_HOSTED) {
     try {
       const r = await fetch('/api/data', {
@@ -9291,14 +9296,15 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               const dot = !cloudConnected?'#A8A39D':sync.state==='ok'?'#22c55e':sync.state==='token_invalid'?'#f97316':sync.state==='error'?'#ef4444':'#f59e0b';
               const status = !cloudConnected?'Cloud-Sync einrichten':sync.state==='ok'?'Cloud-Sync · live':sync.state==='token_invalid'?'Token abgelaufen!':sync.state==='error'?'Cloud-Sync · Fehler':'Cloud-Sync · verbunden';
               const action = sync.state==='token_invalid'?()=>setModal('tokenUpdate'):()=>setModal('githubSync');
-              return {icon:<span style={{position:'relative',display:'inline-flex'}}><Icons.Cloud/><span style={{position:'absolute',right:-2,bottom:-2,width:6,height:6,borderRadius:'50%',background:dot,border:'1.5px solid #0F0E0C'}}></span></span>,label:status,action};
+              const isAlert = sync.state==='error'||sync.state==='token_invalid';
+              return {icon:<span style={{position:'relative',display:'inline-flex'}}><Icons.Cloud/><span style={{position:'absolute',right:-2,bottom:-2,width:6,height:6,borderRadius:'50%',background:dot,border:'1.5px solid #0F0E0C'}}></span></span>,label:status,action,alert:isAlert};
             })(),
             {icon:<Icons.Lock/>,label:'Sperren',action:()=>setLocked(true)},
             {icon:<Icons.Logout/>,label:'Abmelden',action:()=>{if(window.confirm('Wirklich abmelden? Du musst dich danach neu einloggen.'))onLogout&&onLogout();},danger:true},
-          ].map(({icon,label,action,danger})=>(
-            <button key={label} onClick={action} style={{display:'flex',alignItems:'center',width:'100%',padding:'8px 10px',borderRadius:9,border:'none',background:'transparent',cursor:'pointer',gap:10,color:'rgba(255,255,255,.25)',fontSize:12.5,transition:'color .15s'}}
-              onMouseEnter={e=>e.currentTarget.style.color=danger?'rgba(255,140,140,.85)':'rgba(255,255,255,.5)'}
-              onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,.25)'}>
+          ].map(({icon,label,action,danger,alert})=>(
+            <button key={label} onClick={action} style={{display:'flex',alignItems:'center',width:'100%',padding:'8px 10px',borderRadius:9,border:'none',background:alert?'rgba(239,68,68,0.15)':'transparent',cursor:'pointer',gap:10,color:alert?'rgba(255,150,150,0.9)':'rgba(255,255,255,.25)',fontSize:12.5,transition:'color .15s,background .15s'}}
+              onMouseEnter={e=>{e.currentTarget.style.color=danger?'rgba(255,140,140,.85)':alert?'rgba(255,180,180,1)':'rgba(255,255,255,.5)';}}
+              onMouseLeave={e=>{e.currentTarget.style.color=alert?'rgba(255,150,150,0.9)':danger?'rgba(255,140,140,.4)':'rgba(255,255,255,.25)';e.currentTarget.style.background=alert?'rgba(239,68,68,0.15)':'transparent';}}>
               {icon}<span>{label}</span>
             </button>
           ))}
@@ -9380,7 +9386,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
             }}
             onOpen={(q)=>setEditingQuote(q)}
             onDelete={(id)=>upd({quotes:(state.quotes||[]).filter(q=>q.id!==id)})}
-            onDuplicate={async q=>{const settings=state.quoteSettings||DEFAULT_QUOTE_SETTINGS;const duped={...q,id:uid(),number:nextQuoteNumber(settings),createdAt:new Date().toISOString(),status:'entwurf'};const patch={quotes:[...(state.quotes||[]),duped],quoteSettings:{...settings,quoteCounter:(settings.quoteCounter||1)+1}};upd(patch);skipNextSaveRef.current=true;await saveEncrypted(cryptoKey,{...state,...patch}).catch(console.error);}}
+            onDuplicate={async q=>{const settings=state.quoteSettings||DEFAULT_QUOTE_SETTINGS;const duped={...q,id:uid(),number:nextQuoteNumber(settings),createdAt:new Date().toISOString(),status:'entwurf'};const patch={quotes:[...(state.quotes||[]),duped],quoteSettings:{...settings,quoteCounter:(settings.quoteCounter||1)+1}};skipNextSaveRef.current=true;upd(patch);await saveEncrypted(cryptoKey,{...state,...patch}).catch(console.error);}}
             onSettings={()=>setModal('quoteSettings')}
           />
         </>) : activeId === FORMS_VIEW ? (<>
