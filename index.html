@@ -9304,7 +9304,7 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
           ].map(({icon,label,action,danger,alert})=>(
             <button key={label} onClick={action} style={{display:'flex',alignItems:'center',width:'100%',padding:'8px 10px',borderRadius:9,border:'none',background:alert?'rgba(239,68,68,0.15)':'transparent',cursor:'pointer',gap:10,color:alert?'rgba(255,150,150,0.9)':'rgba(255,255,255,.25)',fontSize:12.5,transition:'color .15s,background .15s'}}
               onMouseEnter={e=>{e.currentTarget.style.color=danger?'rgba(255,140,140,.85)':alert?'rgba(255,180,180,1)':'rgba(255,255,255,.5)';}}
-              onMouseLeave={e=>{e.currentTarget.style.color=alert?'rgba(255,150,150,0.9)':danger?'rgba(255,140,140,.4)':'rgba(255,255,255,.25)';e.currentTarget.style.background=alert?'rgba(239,68,68,0.15)':'transparent';}}>
+              onMouseLeave={e=>{e.currentTarget.style.color=alert?'rgba(255,150,150,0.9)':'rgba(255,255,255,.25)';e.currentTarget.style.background=alert?'rgba(239,68,68,0.15)':'transparent';}}>
               {icon}<span>{label}</span>
             </button>
           ))}
