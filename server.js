@@ -1992,6 +1992,7 @@ let linkedinConfig = {
   message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
   cookies: '',
   anthropicKey: '',
+  proxy: '',
 };
 
 function getLinkedinBot() {
@@ -2023,8 +2024,8 @@ app.get('/api/linkedin/log', requireAuth, (req, res) => {
 // GET /api/linkedin/config
 app.get('/api/linkedin/config', requireAuth, (req, res) => {
   // Cookies + API-Key nie zurückgeben
-  const { cookies, anthropicKey, ...safe } = linkedinConfig;
-  res.json({ ...safe, hasCookies: !!cookies, hasApiKey: !!anthropicKey });
+  const { cookies, anthropicKey, proxy, ...safe } = linkedinConfig;
+  res.json({ ...safe, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
 });
 
 // PUT /api/linkedin/config
@@ -2035,8 +2036,9 @@ app.put('/api/linkedin/config', requireAuth, express.json(), (req, res) => {
   if (message !== undefined) linkedinConfig.message = String(message).slice(0, 300);
   if (cookies !== undefined) linkedinConfig.cookies = String(cookies).slice(0, 50000);
   if (anthropicKey !== undefined) linkedinConfig.anthropicKey = String(anthropicKey).slice(0, 200);
-  const { cookies: _c, anthropicKey: _k, ...safe } = linkedinConfig;
-  res.json({ ok: true, ...safe, hasCookies: !!linkedinConfig.cookies, hasApiKey: !!linkedinConfig.anthropicKey });
+  if (proxy !== undefined) linkedinConfig.proxy = String(proxy).slice(0, 500);
+  const { cookies: _c, anthropicKey: _k, proxy: _p, ...safe } = linkedinConfig;
+  res.json({ ok: true, ...safe, hasCookies: !!linkedinConfig.cookies, hasApiKey: !!linkedinConfig.anthropicKey, hasProxy: !!linkedinConfig.proxy });
 });
 
 // POST /api/linkedin/start

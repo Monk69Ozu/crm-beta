@@ -182,6 +182,13 @@ async function runBot(config) {
 
   let browser, context, page;
   try {
+    // Session-ID: gleiche IP für die ganze Bot-Session (verhindert IP-Sprünge)
+    const sessionId = Math.random().toString(36).slice(2, 10);
+    const proxyServer = config.proxy
+      ? config.proxy.replace(/^(https?:\/\/)([^:]+):([^@]+)@/, (_, proto, user, pass) =>
+          `${proto}${user}-session-${sessionId}:${pass}@`)
+      : undefined;
+
     browser = await chromium.launch({
       executablePath: CHROMIUM_PATH,
       headless: true,
@@ -191,6 +198,7 @@ async function runBot(config) {
         '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
       ],
+      ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
     });
     botState.browser = browser;
 

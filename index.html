@@ -6625,9 +6625,11 @@ function LinkedInOutreachBot(){
     message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
     cookies: '',
     anthropicKey: '',
+    proxy: '',
   });
   const [serverHasCookies, setServerHasCookies] = React.useState(false);
   const [serverHasKey, setServerHasKey] = React.useState(false);
+  const [serverHasProxy, setServerHasProxy] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState('');
   const [actionBusy, setActionBusy] = React.useState(false);
@@ -6646,6 +6648,7 @@ function LinkedInOutreachBot(){
       setConfig(c=>({...c, zielgruppe:d.zielgruppe||c.zielgruppe, tagLimit:d.tagLimit||c.tagLimit, message:d.message||c.message}));
       setServerHasCookies(!!d.hasCookies);
       setServerHasKey(!!d.hasApiKey);
+      setServerHasProxy(!!d.hasProxy);
     }).catch(()=>{});
     fetchStatus();
     fetchLog();
@@ -6671,11 +6674,13 @@ function LinkedInOutreachBot(){
       const body = {zielgruppe:config.zielgruppe, tagLimit:config.tagLimit, message:config.message};
       if(config.cookies.trim()) body.cookies = config.cookies;
       if(config.anthropicKey.trim()) body.anthropicKey = config.anthropicKey;
+      if(config.proxy.trim()) body.proxy = config.proxy;
       const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
       const d = await r.json();
       if(d.error) throw new Error(d.error);
       setServerHasCookies(!!d.hasCookies);
       setServerHasKey(!!d.hasApiKey);
+      setServerHasProxy(!!d.hasProxy);
       setSaveMsg('✓ Gespeichert');
       setTimeout(()=>setSaveMsg(''),2000);
     }catch(e){ setErr(e.message); }
@@ -6758,6 +6763,14 @@ function LinkedInOutreachBot(){
             <input type="password" value={config.anthropicKey} onChange={e=>setConfig(c=>({...c,anthropicKey:e.target.value}))}
               placeholder={serverHasKey?'(aktuell gespeichert — neu eingeben zum Ändern)':'sk-ant-api03-...'}/>
             <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Für Haiku-Personalisierung (optional — ohne Key wird der Standard-Text verwendet)</div>
+          </div>
+          <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
+              Residential Proxy {serverHasProxy&&<span style={{color:'#22c55e',fontWeight:400}}>✓ aktiv</span>}
+            </label>
+            <input type="password" value={config.proxy} onChange={e=>setConfig(c=>({...c,proxy:e.target.value}))}
+              placeholder={serverHasProxy?'(gespeichert — neu eingeben zum Ändern)':'http://user:pass@proxy.smartproxy.net:3120'}/>
+            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfohlen: Smartproxy Residential — schützt deinen LinkedIn-Account vor Sperren</div>
           </div>
         </div>
       </div>
