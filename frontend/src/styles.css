@@ -1,0 +1,362 @@
+/*
+ * WebArs CRM — globale Styles.
+ *
+ * 1:1 extrahiert aus dem <style>-Block in legacy/index.html (Zeilen 15-81)
+ * plus saemtliche groesseren CSS-Bloecke die im Original an verschiedenen
+ * Stellen lagen. Aenderungen hier wirken sich auf das gesamte Frontend aus.
+ */
+
+:root {
+  --sidebar-bg: #0F0E0C;
+  --main-bg: #F3F0EB;
+  --card-bg: #fff;
+  --text-primary: #141210;
+  --text-secondary: #6B6560;
+  --text-tertiary: #A8A39D;
+  --accent: oklch(62% 0.14 65);
+  --input-border: rgba(0, 0, 0, 0.12);
+  --radius-btn: 9px;
+  --radius-input: 9px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  background: var(--main-bg);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+}
+
+input,
+textarea,
+select {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  outline: none;
+  border: 1.5px solid var(--input-border);
+  border-radius: var(--radius-input);
+  padding: 10px 14px;
+  font-size: 13.5px;
+  background: white;
+  color: var(--text-primary);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+  font-weight: 400;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #141210;
+  box-shadow: 0 0 0 3px rgba(20, 18, 16, 0.06);
+}
+
+input::placeholder {
+  color: var(--text-tertiary);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.6;
+}
+
+button {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  cursor: pointer;
+  border: none;
+}
+
+/* ── Modal ───────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 7, 5, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: ovFadeIn 0.18s ease;
+}
+
+.modal-box {
+  background: white;
+  border-radius: 18px;
+  padding: 32px;
+  width: 520px;
+  max-width: 95vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
+  animation: modalSlideUp 0.22s cubic-bezier(0.34, 1.2, 0.64, 1);
+}
+
+/* ── Animationen ─────────────────────────────────────────────────── */
+@keyframes ovFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalSlideUp {
+  from { transform: translateY(16px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes loginIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(5px); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 18px;
+  border-radius: var(--radius-btn);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--text-primary);
+  color: white;
+}
+.btn-primary:hover {
+  background: #333;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+.btn-primary:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1.5px solid var(--input-border);
+}
+.btn-ghost:hover {
+  background: #F5F2EE;
+  border-color: rgba(0, 0, 0, 0.18);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background: #FEF2F2;
+  color: #C0392B;
+  border: 1.5px solid #FECACA;
+}
+.btn-danger:hover {
+  background: #FEE2E2;
+}
+
+.btn-sm {
+  padding: 7px 13px;
+  font-size: 12.5px;
+}
+
+.btn-icon {
+  padding: 8px;
+  border-radius: 8px;
+}
+
+/* ── Auth-Screens ────────────────────────────────────────────────── */
+.auth-screen {
+  min-height: 100vh;
+  background: #0F0E0C;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.auth-card {
+  width: 400px;
+  max-width: 100%;
+  animation: loginIn 0.4s cubic-bezier(0.34, 1.1, 0.64, 1);
+}
+
+.auth-panel {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 28px;
+  display: grid;
+  gap: 14px;
+}
+
+.auth-input {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.1) !important;
+  color: white !important;
+  padding: 13px 16px !important;
+  font-size: 15px !important;
+  border-radius: 11px !important;
+}
+.auth-input::placeholder {
+  color: rgba(255, 255, 255, 0.25) !important;
+}
+.auth-input:focus {
+  border-color: rgba(255, 255, 255, 0.35) !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06) !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+}
+
+.auth-btn {
+  width: 100%;
+  padding: 13px 20px !important;
+  font-size: 15px !important;
+  border-radius: 11px !important;
+  font-weight: 700 !important;
+  background: white !important;
+  color: #0F0E0C !important;
+  transition: all 0.15s !important;
+  letter-spacing: -0.01em !important;
+}
+.auth-btn:hover {
+  background: #E8E4DF !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+}
+.auth-btn:active {
+  transform: translateY(0) !important;
+}
+.auth-btn:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(0, 0, 0, 0.15);
+  border-top-color: #0F0E0C;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+.totp-input {
+  font-size: 28px !important;
+  letter-spacing: 10px !important;
+  text-align: center !important;
+  font-weight: 700 !important;
+  padding: 16px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* ── Print View (Angebote) ──────────────────────────────────────── */
+.quote-print-page {
+  background: #E8E4DF;
+  padding: 40px 20px;
+  min-height: 100vh;
+}
+
+.quote-paper {
+  background: white;
+  width: 210mm;
+  margin: 0 auto;
+  padding: 22mm 20mm;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 10.5pt;
+  color: #141210;
+  line-height: 1.55;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.quote-paper h1,
+.quote-paper h2,
+.quote-paper h3 {
+  margin: 0;
+}
+
+.quote-cover-break {
+  display: none;
+}
+
+@media print {
+  body { background: white !important; }
+  .quote-print-page { background: white !important; padding: 0 !important; }
+  .quote-paper {
+    box-shadow: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 16mm 14mm !important;
+  }
+  .quote-no-print { display: none !important; }
+  .quote-cover-break {
+    display: block;
+    break-after: page;
+    page-break-after: always;
+  }
+  .quote-section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  @page {
+    size: A4;
+    margin: 0;
+  }
+}
