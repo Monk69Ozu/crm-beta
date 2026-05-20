@@ -12,7 +12,7 @@
 //   - Exportiert NUR CRMApp. Andere Komponenten (incl. AuthScreen-Duplikate
 //     aus dem Original) sind file-private und unbenutzt.
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 
 // ── Self-hosted mode (injected by server.js at runtime) ─────────
 // When served from the Express server, window.WEBARS_SELF_HOSTED is set
