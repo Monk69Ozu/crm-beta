@@ -18,11 +18,20 @@ import {
 import { escrowMasterKey } from '../lib/auth.js';
 import { SELF_HOSTED, apiToken, serverHasAuth } from '../lib/api.js';
 import { getOrCreateDeviceKey } from '../lib/device.js';
-import { loadEncryptedFromServer } from '../lib/data.js';
 import AuthScreen from './AuthScreen.jsx';
 import ForgotPasswordScreen from './ForgotPasswordScreen.jsx';
 import ResetPasswordScreen from './ResetPasswordScreen.jsx';
-import { CRMApp, DEFAULT_STATE } from '../legacy/legacy-bundle.jsx';
+// WICHTIG: loadGithubSettings + loadEncrypted aus dem Bundle, NICHT aus
+// lib/sync.js — beide haben getrennte _ghSettings-Globals und CRMApp im
+// Bundle ruft seine eigene saveEncrypted, die das Bundle-_ghSettings braucht.
+import {
+  CRMApp,
+  DEFAULT_STATE,
+  loadGithubSettings,
+  hasGithubSettings,
+  loadEncrypted,
+  saveEncrypted,
+} from '../legacy/legacy-bundle.jsx';
 
 // AuthWrapper — orchestriert alle Auth-Phasen.
 // 1:1 nach legacy/index.html (Zeilen 9779-9892), mit den fuer die Migration
@@ -96,11 +105,16 @@ export default function AuthWrapper() {
             ['encrypt', 'decrypt'],
           );
           if (key) {
+            // GitHub/Server-Sync-Settings im Bundle initialisieren — sonst
+            // pusht CRMApp's saveEncrypted spaeter nichts zum Server.
+            if (hasGithubSettings()) {
+              try { await loadGithubSettings(key); } catch {}
+            }
             let data = null;
             try {
-              data = await loadEncryptedFromServer(key);
+              data = await loadEncrypted(key);
             } catch (loadErr) {
-              if (loadErr && loadErr.code === 'KEY_MISMATCH') {
+              if (loadErr && loadErr.message === 'KEY_MISMATCH') {
                 console.warn(
                   '[auto-login] key mismatch — clearing device key, going to login',
                 );
@@ -164,7 +178,31 @@ export default function AuthWrapper() {
     setPhase('login');
   };
 
-  const completeAuth = async (key, data /* , email */) => {
+  // completeAuth wird von AuthScreen nach Login/Setup aufgerufen.
+  // isSetup=true → frische DB mit DEFAULT_STATE initialisieren.
+  // isSetup=false → aktuelle Server-Daten laden.
+  const completeAuth = async (key, data, isSetup = false) => {
+    if (hasGithubSettings()) {
+      try {
+        // Bundle's _ghSettings setzen — sonst pusht CRMApp's saveEncrypted nichts.
+        await loadGithubSettings(key);
+        if (isSetup) {
+          await saveEncrypted(key, data || DEFAULT_STATE);
+        } else {
+          const fresh = await loadEncrypted(key);
+          if (fresh) data = fresh;
+        }
+      } catch (e) {
+        if (e && e.message === 'KEY_MISMATCH') {
+          window.alert(
+            'Anmeldung erfolgreich, aber die Server-Daten passen nicht zum Schlüssel. Bitte erneut anmelden oder ein Backup wiederherstellen.',
+          );
+          setPhase('login');
+          return;
+        }
+        console.warn('Cloud sync init failed', e);
+      }
+    }
     // Escrow aktualisieren, damit Passwort-Reset zukuenftig funktioniert.
     escrowMasterKey(key).catch(() => {});
     setCryptoKey(key);

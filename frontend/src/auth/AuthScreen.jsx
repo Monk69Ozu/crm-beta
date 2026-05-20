@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { setupPassword, verifyPassword } from '../lib/auth.js';
 import { storeEmailHash, OWNER_EMAIL } from '../lib/storage.js';
 import { storeKeyForDevice } from '../lib/device.js';
-import { loadEncryptedFromServer } from '../lib/data.js';
 import { SELF_HOSTED } from '../lib/api.js';
 import PasswordInput from '../components/PasswordInput.jsx';
 
@@ -58,9 +57,8 @@ export default function AuthScreen({
         try {
           await storeKeyForDevice(masterKey);
         } catch {}
-        // Setup-Flow ohne Initial-crm_data — CRMApp in Session 3 legt
-        // DEFAULT_STATE beim ersten Save an.
-        onDone(masterKey, null, trimmed);
+        // isSetup=true → completeAuth initialisiert die DB mit DEFAULT_STATE.
+        onDone(masterKey, null, true);
       } else {
         const key = await verifyPassword(pw);
         if (!key) {
@@ -68,23 +66,12 @@ export default function AuthScreen({
           setBusy(false);
           return;
         }
-        let data = null;
-        try {
-          data = await loadEncryptedFromServer(key);
-        } catch (loadErr) {
-          if (loadErr && loadErr.code === 'KEY_MISMATCH') {
-            setErr(
-              'Anmeldung erfolgreich, aber Server-Daten passen nicht zum Schlüssel. Bitte Admin kontaktieren oder ein Backup wiederherstellen.',
-            );
-            setBusy(false);
-            return;
-          }
-          throw loadErr;
-        }
         try {
           await storeKeyForDevice(key);
         } catch {}
-        onDone(key, data, OWNER_EMAIL);
+        // completeAuth laedt die aktuellen Server-Daten (inkl. KEY_MISMATCH-
+        // Behandlung).
+        onDone(key, null, false);
       }
     } catch (e) {
       const msg = e?.message || '';

@@ -9822,4 +9822,12 @@ function AuthWrapper(){
   return null;
 }
 
-export { CRMApp, DEFAULT_STATE };
+export {
+  CRMApp,
+  DEFAULT_STATE,
+  loadGithubSettings,
+  hasGithubSettings,
+  clearGithubSettings,
+  saveEncrypted,
+  loadEncrypted,
+};
