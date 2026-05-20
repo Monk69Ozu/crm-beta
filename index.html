@@ -6785,6 +6785,8 @@ function LinkedInOutreachBot(){
                   setSaving(true); setSaveMsg(''); setErr('');
                   try{
                     const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify({proxy:config.proxy})});
+                    const ct = r.headers.get('content-type')||'';
+                    if(!ct.includes('json')) throw new Error('Server noch nicht bereit — Seite neu laden und nochmal versuchen.');
                     const d = await r.json();
                     if(d.error) throw new Error(d.error);
                     setServerHasProxy(!!d.hasProxy);

@@ -2030,7 +2030,7 @@ app.get('/api/linkedin/config', requireAuth, (req, res) => {
 
 // PUT /api/linkedin/config
 app.put('/api/linkedin/config', requireAuth, express.json(), (req, res) => {
-  const { zielgruppe, tagLimit, message, cookies, anthropicKey } = req.body || {};
+  const { zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = req.body || {};
   if (zielgruppe !== undefined) linkedinConfig.zielgruppe = String(zielgruppe).slice(0, 500);
   if (tagLimit !== undefined) linkedinConfig.tagLimit = Math.min(Math.max(parseInt(tagLimit) || 10, 1), 100);
   if (message !== undefined) linkedinConfig.message = String(message).slice(0, 300);
