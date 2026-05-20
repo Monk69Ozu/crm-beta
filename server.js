@@ -1495,31 +1495,44 @@ app.post('/api/admin/reset', requireAuth, (_req, res) => {
 });
 
 // ── Frontend (inject SELF_HOSTED flag) ───────────────────────────
-// USE_VITE_BUILD=true → serviere frontend/dist (neuer Vite-Build, vite-migration).
-// Sonst → klassisches monolithisches index.html im Repo-Root (Live-Stand).
-// Default ist FALSE → kein Risiko fuer Live-Deploys ohne explizites Opt-in.
-const USE_VITE_BUILD = process.env.USE_VITE_BUILD === 'true';
-const INDEX_PATH = USE_VITE_BUILD
-  ? path.join(__dirname, 'frontend', 'dist', 'index.html')
-  : path.join(__dirname, 'index.html');
+// Default: Vite-Build aus frontend/dist/. Wenn USE_VITE_BUILD=false explizit
+// gesetzt ist, faellt der Server auf das alte monolithische index.html im
+// Repo-Root zurueck (Rollback-Pfad). Falls der Vite-Build fehlt (Build
+// fehlgeschlagen, falsches Image), fallback ebenfalls automatisch zu legacy.
+const USE_VITE_BUILD = process.env.USE_VITE_BUILD !== 'false';
+const VITE_INDEX_PATH = path.join(__dirname, 'frontend', 'dist', 'index.html');
+const LEGACY_INDEX_PATH = path.join(__dirname, 'index.html');
 const VITE_ASSETS_DIR = path.join(__dirname, 'frontend', 'dist');
 
 let INDEX_HTML_CACHED = null;
 let INDEX_HTML_ERR = null;
-try {
-  const raw = fs.readFileSync(INDEX_PATH, 'utf8');
-  const inject = `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`;
-  if (!raw.includes('<script>')) {
-    INDEX_HTML_ERR = 'index.html has no <script> tag — cannot inject API token. Login will not work.';
-    console.error('❌  ' + INDEX_HTML_ERR);
-  } else {
-    INDEX_HTML_CACHED = raw.replace('<script>', inject);
-    console.log(`✓ ${USE_VITE_BUILD ? 'frontend/dist/index.html (vite)' : 'index.html (legacy)'} cached and patched with self-hosted token`);
+let FRONTEND_MODE = 'unknown';
+const tryFrontend = (label, indexPath) => {
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf8');
+    const inject = `<script>\n// ── Injected by self-hosted server ──\nwindow.WEBARS_SELF_HOSTED = true;\nwindow.WEBARS_API_TOKEN = ${JSON.stringify(API_SECRET)};\n`;
+    if (!raw.includes('<script>')) return { err: `${label}: no <script> tag — cannot inject API token` };
+    return { html: raw.replace('<script>', inject), label };
+  } catch(e) { return { err: `${label}: ${e.message}` }; }
+};
+
+if (USE_VITE_BUILD) {
+  const r = tryFrontend('frontend/dist/index.html (vite)', VITE_INDEX_PATH);
+  if (r.html) { INDEX_HTML_CACHED = r.html; FRONTEND_MODE = 'vite'; }
+  else {
+    console.warn('⚠ Vite-Build nicht verfuegbar, fallback auf legacy:', r.err);
+    const f = tryFrontend('index.html (legacy fallback)', LEGACY_INDEX_PATH);
+    if (f.html) { INDEX_HTML_CACHED = f.html; FRONTEND_MODE = 'legacy-fallback'; }
+    else INDEX_HTML_ERR = f.err;
   }
-} catch(e) {
-  INDEX_HTML_ERR = 'Could not load index.html: ' + e.message;
-  console.error('❌  ' + INDEX_HTML_ERR);
+} else {
+  const r = tryFrontend('index.html (legacy, USE_VITE_BUILD=false)', LEGACY_INDEX_PATH);
+  if (r.html) { INDEX_HTML_CACHED = r.html; FRONTEND_MODE = 'legacy'; }
+  else INDEX_HTML_ERR = r.err;
 }
+if (INDEX_HTML_ERR) console.error('❌  ' + INDEX_HTML_ERR);
+else console.log(`✓ Frontend geladen: ${FRONTEND_MODE}`);
+const VITE_ACTIVE = FRONTEND_MODE === 'vite';
 
 // ── Public Quote Links ───────────────────────────────────────────
 app.post('/api/quote-links', requireAuth, async (req, res) => {
@@ -1781,7 +1794,7 @@ app.get('/', (_req, res) => {
 });
 
 // Vite-Build: /assets/* aus frontend/dist liefern (CSS-Chunk, JS-Chunk).
-if (USE_VITE_BUILD) {
+if (VITE_ACTIVE) {
   app.use('/assets', express.static(path.join(VITE_ASSETS_DIR, 'assets'), { maxAge: '1y', immutable: true }));
 }
 app.use(express.static(__dirname, { index: false }));
