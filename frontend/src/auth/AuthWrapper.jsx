@@ -22,6 +22,7 @@ import { loadEncryptedFromServer } from '../lib/data.js';
 import AuthScreen from './AuthScreen.jsx';
 import ForgotPasswordScreen from './ForgotPasswordScreen.jsx';
 import ResetPasswordScreen from './ResetPasswordScreen.jsx';
+import { CRMApp } from '../legacy/legacy-bundle.jsx';
 
 // AuthWrapper — orchestriert alle Auth-Phasen.
 // 1:1 nach legacy/index.html (Zeilen 9779-9892), mit den fuer die Migration
@@ -220,10 +221,10 @@ export default function AuthWrapper() {
 
   if (phase === 'app' && cryptoKey) {
     return (
-      <CRMPlaceholder
+      <CRMApp
         cryptoKey={cryptoKey}
-        crmData={crmData}
-        onReset={handleReset}
+        initialData={crmData}
+        onLock={() => setPhase('login')}
         onLogout={handleLogout}
       />
     );
@@ -232,9 +233,9 @@ export default function AuthWrapper() {
   return null;
 }
 
-// Temporaerer Placeholder bis CRMApp in Session 6 vollstaendig migriert ist.
-// Zeigt nur an dass Login funktioniert + erste Datenzeile vom Server.
-function CRMPlaceholder({ cryptoKey, crmData, onReset, onLogout }) {
+// Fallback-Placeholder (z.Z. unbenutzt — wird verwendet falls Bundle-Load
+// fehlschlaegt; lassen wir vorerst als sichere Reserve).
+function CRMPlaceholderUnused({ cryptoKey, crmData, onReset, onLogout }) {
   const dataInfo = crmData
     ? `geladen (${Object.keys(crmData).length} Top-Level-Felder)`
     : 'leer / nicht gefunden';

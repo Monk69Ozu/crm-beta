@@ -1495,9 +1495,15 @@ app.post('/api/admin/reset', requireAuth, (_req, res) => {
 });
 
 // ── Frontend (inject SELF_HOSTED flag) ───────────────────────────
-// Cache the injected HTML once at startup — index.html is read-only at runtime
-// and only changes between deploys. Avoids a synchronous fs read per request.
-const INDEX_PATH = path.join(__dirname, 'index.html');
+// USE_VITE_BUILD=true → serviere frontend/dist (neuer Vite-Build, vite-migration).
+// Sonst → klassisches monolithisches index.html im Repo-Root (Live-Stand).
+// Default ist FALSE → kein Risiko fuer Live-Deploys ohne explizites Opt-in.
+const USE_VITE_BUILD = process.env.USE_VITE_BUILD === 'true';
+const INDEX_PATH = USE_VITE_BUILD
+  ? path.join(__dirname, 'frontend', 'dist', 'index.html')
+  : path.join(__dirname, 'index.html');
+const VITE_ASSETS_DIR = path.join(__dirname, 'frontend', 'dist');
+
 let INDEX_HTML_CACHED = null;
 let INDEX_HTML_ERR = null;
 try {
@@ -1508,7 +1514,7 @@ try {
     console.error('❌  ' + INDEX_HTML_ERR);
   } else {
     INDEX_HTML_CACHED = raw.replace('<script>', inject);
-    console.log('✓ index.html cached and patched with self-hosted token');
+    console.log(`✓ ${USE_VITE_BUILD ? 'frontend/dist/index.html (vite)' : 'index.html (legacy)'} cached and patched with self-hosted token`);
   }
 } catch(e) {
   INDEX_HTML_ERR = 'Could not load index.html: ' + e.message;
@@ -1774,6 +1780,10 @@ app.get('/', (_req, res) => {
   res.send(INDEX_HTML_CACHED);
 });
 
+// Vite-Build: /assets/* aus frontend/dist liefern (CSS-Chunk, JS-Chunk).
+if (USE_VITE_BUILD) {
+  app.use('/assets', express.static(path.join(VITE_ASSETS_DIR, 'assets'), { maxAge: '1y', immutable: true }));
+}
 app.use(express.static(__dirname, { index: false }));
 
 // ── Backup helper ────────────────────────────────────────────────

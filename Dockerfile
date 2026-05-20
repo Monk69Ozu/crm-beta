@@ -1,4 +1,12 @@
-# ── Build stage ──────────────────────────────────────────────────
+# ── Frontend build stage (only used when USE_VITE_BUILD=true) ────
+FROM node:20-alpine AS frontend
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# ── Server deps stage ────────────────────────────────────────────
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
@@ -24,6 +32,9 @@ COPY logo.png     ./
 # Optional: jarvis tools (not needed at runtime, but nice to have)
 COPY jarvis_crm_tools.js ./
 COPY linkedin-bot.js     ./
+
+# Vite-Build: production dist (wird nur verwendet wenn USE_VITE_BUILD=true).
+COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 RUN chown -R crm:crm /app
 USER crm
