@@ -22,7 +22,7 @@ import { loadEncryptedFromServer } from '../lib/data.js';
 import AuthScreen from './AuthScreen.jsx';
 import ForgotPasswordScreen from './ForgotPasswordScreen.jsx';
 import ResetPasswordScreen from './ResetPasswordScreen.jsx';
-import { CRMApp } from '../legacy/legacy-bundle.jsx';
+import { CRMApp, DEFAULT_STATE } from '../legacy/legacy-bundle.jsx';
 
 // AuthWrapper — orchestriert alle Auth-Phasen.
 // 1:1 nach legacy/index.html (Zeilen 9779-9892), mit den fuer die Migration
@@ -113,7 +113,7 @@ export default function AuthWrapper() {
             }
             console.log('[auto-login] success');
             setCryptoKey(key);
-            setCrmData(data);
+            setCrmData(data || DEFAULT_STATE);
             setPhase('app');
             return;
           }
@@ -168,7 +168,7 @@ export default function AuthWrapper() {
     // Escrow aktualisieren, damit Passwort-Reset zukuenftig funktioniert.
     escrowMasterKey(key).catch(() => {});
     setCryptoKey(key);
-    setCrmData(data);
+    setCrmData(data || DEFAULT_STATE);
     setPhase('app');
   };
 

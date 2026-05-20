@@ -9822,4 +9822,4 @@ function AuthWrapper(){
   return null;
 }
 
-export { CRMApp };
+export { CRMApp, DEFAULT_STATE };
