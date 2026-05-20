@@ -2016,7 +2016,7 @@ app.post('/api/linkedin/sessions', requireAuth, express.json(), (req, res) => {
   const session = {
     id, name,
     config: { zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA', tagLimit: 15, message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?", cookies: '', anthropicKey: '', proxy: '' },
-    bot: mod.createBot(),
+    bot: mod.createBot(id),
   };
   linkedinSessions.set(id, session);
   res.json(sessionSafe(session));

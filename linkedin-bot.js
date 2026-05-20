@@ -10,40 +10,9 @@ const fs = require('fs');
 const path = require('path');
 
 const CHROMIUM_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
-const STATS_FILE = path.join(__dirname, 'data', 'linkedin-stats.json');
 
-// Tages-Maximum GLOBAL über alle Sessions — LinkedIn sperrt ab ~20/Tag
+// Tages-Maximum pro Session — LinkedIn sperrt ab ~20/Tag
 const HARD_DAILY_MAX = 15;
-
-// ── Persistentes Daily-Limit (geteilt über alle Sessions) ─────────────────────
-function loadStats() {
-  try {
-    if (fs.existsSync(STATS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-      const today = new Date().toISOString().slice(0, 10);
-      if (raw.date === today) return raw;
-    }
-  } catch {}
-  return { date: new Date().toISOString().slice(0, 10), sentToday: 0, totalSent: 0 };
-}
-
-function saveStats(stats) {
-  try {
-    const dir = path.dirname(STATS_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
-  } catch {}
-}
-
-function getSentToday() { return loadStats().sentToday; }
-
-function incrementSentToday() {
-  const stats = loadStats();
-  stats.sentToday++;
-  stats.totalSent = (stats.totalSent || 0) + 1;
-  saveStats(stats);
-  return stats;
-}
 
 // ── Haiku Personalisierung ─────────────────────────────────────────────────────
 async function personalizeMessage(profile, templateMsg, anthropicKey, logFn) {
@@ -95,7 +64,40 @@ async function humanScroll(page) {
 }
 
 // ── Factory ────────────────────────────────────────────────────────────────────
-function createBot() {
+function createBot(sessionId) {
+  const statsFile = sessionId
+    ? path.join(__dirname, 'data', `linkedin-stats-${sessionId}.json`)
+    : path.join(__dirname, 'data', 'linkedin-stats.json');
+
+  function loadStats() {
+    try {
+      if (fs.existsSync(statsFile)) {
+        const raw = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+        const today = new Date().toISOString().slice(0, 10);
+        if (raw.date === today) return raw;
+      }
+    } catch {}
+    return { date: new Date().toISOString().slice(0, 10), sentToday: 0, totalSent: 0 };
+  }
+
+  function saveStats(stats) {
+    try {
+      const dir = path.dirname(statsFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2));
+    } catch {}
+  }
+
+  function getSentToday() { return loadStats().sentToday; }
+
+  function incrementSentToday() {
+    const stats = loadStats();
+    stats.sentToday++;
+    stats.totalSent = (stats.totalSent || 0) + 1;
+    saveStats(stats);
+    return stats;
+  }
+
   let state = {
     status: 'stopped',
     sentToday: 0,
