@@ -6618,20 +6618,121 @@ function ColdOutreachView({campaigns, onUpdate}){
   );
 }
 
-// ─── LINKEDIN OUTREACH BOT VIEW ──────────────────────────────────────────────
+// ─── LINKEDIN MULTI-SESSION ───────────────────────────────────────────────────
 function LinkedInOutreachBot(){
   const AUTH = {'Authorization': `Bearer ${window.WEBARS_API_TOKEN}`, 'Content-Type': 'application/json'};
+  const [openSession, setOpenSession] = React.useState(null); // null = Übersicht
+  if(openSession) return <LinkedInSessionDetail id={openSession} onBack={()=>setOpenSession(null)} AUTH={AUTH}/>;
+  return <LinkedInSessionOverview onOpen={setOpenSession} AUTH={AUTH}/>;
+}
 
-  const [botStatus, setBotStatus] = React.useState({status:'stopped', sentToday:0, totalSent:0});
+// ── Übersicht: alle Sessions als Karten ───────────────────────────────────────
+function LinkedInSessionOverview({ onOpen, AUTH }){
+  const [sessions, setSessions] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [creating, setCreating] = React.useState(false);
+  const [err, setErr] = React.useState('');
+
+  async function load(){
+    try{
+      const r = await fetch('/api/linkedin/sessions',{headers:AUTH});
+      const d = await r.json();
+      if(Array.isArray(d)) setSessions(d);
+    }catch{}
+    setLoading(false);
+  }
+
+  React.useEffect(()=>{ load(); const iv=setInterval(load,8000); return()=>clearInterval(iv); },[]);
+
+  async function createSession(){
+    setCreating(true); setErr('');
+    try{
+      const r = await fetch('/api/linkedin/sessions',{method:'POST',headers:AUTH,body:JSON.stringify({name:'Neue Session'})});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      setSessions(s=>[...s,d]);
+      onOpen(d.id);
+    }catch(e){ setErr(e.message); }
+    setCreating(false);
+  }
+
+  async function deleteSession(id, e){
+    e.stopPropagation();
+    if(!confirm('Session löschen?')) return;
+    try{
+      const r = await fetch(`/api/linkedin/sessions/${id}`,{method:'DELETE',headers:AUTH});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      setSessions(s=>s.filter(x=>x.id!==id));
+    }catch(ex){ setErr(ex.message); }
+  }
+
+  const dotColor = st => st==='running'?'#22c55e':st==='error'?'#ef4444':'#d1d5db';
+  const statusLabel = st => st==='running'?'Läuft':st==='error'?'Fehler':'Gestoppt';
+
+  return(
+    <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
+      <div style={{display:'flex',alignItems:'center',gap:12}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:18,fontWeight:800,letterSpacing:'-0.02em'}}>LinkedIn Outreach</div>
+          <div style={{fontSize:12,color:'#B0ABA5',marginTop:2}}>Tages-Limit: max. 15 Anfragen gesamt über alle Sessions</div>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={createSession} disabled={creating}>{creating?'…':'+ Neue Session'}</button>
+      </div>
+
+      {err&&<div style={{background:'rgba(239,68,68,.08)',border:'1px solid rgba(239,68,68,.2)',borderRadius:10,padding:'10px 14px',fontSize:12,color:'#ef4444'}}>{err}</div>}
+
+      {loading?(
+        <div style={{textAlign:'center',padding:'60px 20px',color:'#C8C3BD',fontSize:13}}>Lädt…</div>
+      ):sessions.length===0?(
+        <div style={{textAlign:'center',padding:'60px 20px',color:'#C8C3BD'}}>
+          <div style={{fontSize:40,marginBottom:12,opacity:.3}}>💼</div>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>Noch keine Sessions</div>
+          <div style={{fontSize:12,marginBottom:20}}>Erstelle eine Session um LinkedIn-Outreach zu starten</div>
+          <button className="btn btn-primary btn-sm" onClick={createSession} disabled={creating}>{creating?'…':'+ Erste Session erstellen'}</button>
+        </div>
+      ):(
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
+          {sessions.map(s=>{
+            const st = s.status?.status||'stopped';
+            const isRunning = st==='running';
+            return(
+              <div key={s.id} onClick={()=>onOpen(s.id)}
+                style={{background:'white',borderRadius:14,border:`1px solid ${isRunning?'rgba(34,197,94,.25)':'rgba(0,0,0,.08)'}`,padding:'18px 20px',cursor:'pointer',transition:'box-shadow .15s',boxShadow:'0 1px 4px rgba(0,0,0,.05)'}}
+                onMouseEnter={e=>e.currentTarget.style.boxShadow='0 4px 16px rgba(0,0,0,.1)'}
+                onMouseLeave={e=>e.currentTarget.style.boxShadow='0 1px 4px rgba(0,0,0,.05)'}>
+                <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:12}}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:dotColor(st),marginTop:4,flexShrink:0,boxShadow:isRunning?'0 0 0 3px rgba(34,197,94,.2)':'none'}}/>
+                  <div style={{flex:1,fontWeight:700,fontSize:14,color:'#141210',lineHeight:1.3}}>{s.name}</div>
+                  <button onClick={e=>deleteSession(s.id,e)} className="btn btn-ghost btn-sm btn-icon" style={{flexShrink:0,opacity:.5,fontSize:14}} title="Löschen">✕</button>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+                  <span style={{fontSize:11,fontWeight:600,color:dotColor(st),background:isRunning?'rgba(34,197,94,.1)':st==='error'?'rgba(239,68,68,.08)':'rgba(0,0,0,.04)',borderRadius:99,padding:'2px 8px'}}>{statusLabel(st)}</span>
+                  {s.hasCookies&&<span style={{fontSize:11,color:'#22c55e',background:'rgba(34,197,94,.08)',borderRadius:99,padding:'2px 8px',fontWeight:600}}>Cookies ✓</span>}
+                  {s.hasProxy&&<span style={{fontSize:11,color:'#2563eb',background:'rgba(37,99,235,.08)',borderRadius:99,padding:'2px 8px',fontWeight:600}}>Proxy ✓</span>}
+                </div>
+                <div style={{fontSize:12,color:'#A8A39D'}}>
+                  {s.status?.sentToday||0} heute gesendet · {s.status?.totalSent||0} gesamt
+                </div>
+                {s.status?.lastError&&st==='error'&&(
+                  <div style={{fontSize:11,color:'#ef4444',marginTop:8,lineHeight:1.4}}>{s.status.lastError.slice(0,100)}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Detail-View: eine Session konfigurieren + starten ─────────────────────────
+function LinkedInSessionDetail({ id, onBack, AUTH }){
+
+  const [name, setName] = React.useState('');
+  const [botStatus, setBotStatus] = React.useState({status:'stopped',sentToday:0,totalSent:0,dailyMax:15,remainingToday:15});
   const [log, setLog] = React.useState([]);
-  const [config, setConfig] = React.useState({
-    zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
-    tagLimit: 20,
-    message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
-    cookies: '',
-    anthropicKey: '',
-    proxy: '',
-  });
+  const [config, setConfig] = React.useState({ zielgruppe:'', tagLimit:15, message:'', cookies:'', anthropicKey:'', proxy:'' });
   const [serverHasCookies, setServerHasCookies] = React.useState(false);
   const [serverHasKey, setServerHasKey] = React.useState(false);
   const [serverHasProxy, setServerHasProxy] = React.useState(false);
@@ -6640,56 +6741,41 @@ function LinkedInOutreachBot(){
   const [actionBusy, setActionBusy] = React.useState(false);
   const [err, setErr] = React.useState('');
 
-  const cookiesValid = React.useMemo(()=>{
-    if(!config.cookies.trim()) return false;
-    try{ const p=JSON.parse(config.cookies); return Array.isArray(p)&&p.length>0; }
-    catch{ return false; }
-  }, [config.cookies]);
+  const cookiesValid = React.useMemo(()=>{ try{ const p=JSON.parse(config.cookies); return Array.isArray(p)&&p.length>0; }catch{ return false; } },[config.cookies]);
 
-  // Initial load: config + status + log
   React.useEffect(()=>{
-    fetch('/api/linkedin/config',{headers:AUTH}).then(r=>r.json()).then(d=>{
+    fetch(`/api/linkedin/sessions/${id}/config`,{headers:AUTH}).then(r=>r.json()).then(d=>{
       if(d.error) return;
-      setConfig(c=>({...c, zielgruppe:d.zielgruppe||c.zielgruppe, tagLimit:d.tagLimit||c.tagLimit, message:d.message||c.message}));
-      setServerHasCookies(!!d.hasCookies);
-      setServerHasKey(!!d.hasApiKey);
-      setServerHasProxy(!!d.hasProxy);
+      setConfig(c=>({...c,zielgruppe:d.zielgruppe||c.zielgruppe,tagLimit:d.tagLimit||c.tagLimit,message:d.message||c.message}));
+      setServerHasCookies(!!d.hasCookies); setServerHasKey(!!d.hasApiKey); setServerHasProxy(!!d.hasProxy);
     }).catch(()=>{});
-    fetchStatus();
-    fetchLog();
-  }, []);
+    fetchStatus(); fetchLog();
+  },[id]);
 
-  // Polling while running
   React.useEffect(()=>{
-    if(botStatus.status !== 'running') return;
-    const iv = setInterval(()=>{ fetchStatus(); fetchLog(); }, 6000);
-    return ()=>clearInterval(iv);
-  }, [botStatus.status]);
+    if(botStatus.status!=='running') return;
+    const iv=setInterval(()=>{ fetchStatus(); fetchLog(); },6000);
+    return()=>clearInterval(iv);
+  },[botStatus.status]);
 
-  function fetchStatus(){
-    fetch('/api/linkedin/status',{headers:AUTH}).then(r=>r.json()).then(d=>{ if(!d.error) setBotStatus(d); }).catch(()=>{});
-  }
-  function fetchLog(){
-    fetch('/api/linkedin/log?limit=100',{headers:AUTH}).then(r=>r.json()).then(d=>{ if(d.log) setLog(d.log); }).catch(()=>{});
-  }
+  function fetchStatus(){ fetch(`/api/linkedin/sessions/${id}/status`,{headers:AUTH}).then(r=>r.json()).then(d=>{ if(!d.error) setBotStatus(d); }).catch(()=>{}); }
+  function fetchLog(){ fetch(`/api/linkedin/sessions/${id}/log?limit=100`,{headers:AUTH}).then(r=>r.json()).then(d=>{ if(d.log) setLog(d.log); }).catch(()=>{}); }
 
   async function saveConfig(){
     setSaving(true); setSaveMsg(''); setErr('');
     try{
-      const body = {zielgruppe:config.zielgruppe, tagLimit:config.tagLimit, message:config.message};
-      if(config.cookies.trim()) body.cookies = config.cookies;
-      if(config.anthropicKey.trim()) body.anthropicKey = config.anthropicKey;
-      if(config.proxy.trim()) body.proxy = config.proxy;
-      const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
-      const ct = r.headers.get('content-type')||'';
-      if(!ct.includes('json')) throw new Error('Server noch nicht bereit — bitte Coolify-Deploy abwarten und Seite neu laden.');
-      const d = await r.json();
-      if(d.error) throw new Error(d.error);
-      setServerHasCookies(!!d.hasCookies);
-      setServerHasKey(!!d.hasApiKey);
-      setServerHasProxy(!!d.hasProxy);
-      setSaveMsg('✓ Gespeichert');
-      setTimeout(()=>setSaveMsg(''),2000);
+      const body = {zielgruppe:config.zielgruppe,tagLimit:config.tagLimit,message:config.message};
+      if(name.trim()) body.name=name.trim();
+      if(config.cookies.trim()) body.cookies=config.cookies;
+      if(config.anthropicKey.trim()) body.anthropicKey=config.anthropicKey;
+      if(config.proxy.trim()) body.proxy=config.proxy;
+      const r = await fetch(`/api/linkedin/sessions/${id}/config`,{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
+      const ct=r.headers.get('content-type')||'';
+      if(!ct.includes('json')) throw new Error('Server noch nicht bereit — Seite neu laden.');
+      const d=await r.json(); if(d.error) throw new Error(d.error);
+      setServerHasCookies(!!d.hasCookies); setServerHasKey(!!d.hasApiKey); setServerHasProxy(!!d.hasProxy);
+      setSaveMsg('✓ Gespeichert'); setTimeout(()=>setSaveMsg(''),2000);
+      setConfig(c=>({...c,cookies:'',anthropicKey:'',proxy:''})); setName('');
     }catch(e){ setErr(e.message); }
     setSaving(false);
   }
@@ -6697,48 +6783,43 @@ function LinkedInOutreachBot(){
   async function handleStart(){
     setActionBusy(true); setErr('');
     try{
-      // Config erst speichern damit Cookies + Key aktuell sind
       await saveConfig();
-      const r = await fetch('/api/linkedin/start',{method:'POST',headers:AUTH,body:JSON.stringify({})});
-      const d = await r.json();
-      if(d.error) throw new Error(d.error);
-      setBotStatus(s=>({...s,status:'running'}));
-      fetchLog();
+      const r=await fetch(`/api/linkedin/sessions/${id}/start`,{method:'POST',headers:AUTH,body:JSON.stringify({})});
+      const d=await r.json(); if(d.error) throw new Error(d.error);
+      setBotStatus(s=>({...s,status:'running'})); fetchLog();
     }catch(e){ setErr(e.message); }
     setActionBusy(false);
   }
 
   async function handleStop(){
     setActionBusy(true);
-    try{
-      await fetch('/api/linkedin/stop',{method:'POST',headers:AUTH});
-      setBotStatus(s=>({...s,status:'stopped'}));
-      fetchStatus();
-    }catch(e){ setErr(e.message); }
+    try{ await fetch(`/api/linkedin/sessions/${id}/stop`,{method:'POST',headers:AUTH}); setBotStatus(s=>({...s,status:'stopped'})); fetchStatus(); }
+    catch(e){ setErr(e.message); }
     setActionBusy(false);
   }
 
-  const isRunning = botStatus.status === 'running';
-  const dotColor  = isRunning ? '#22c55e' : botStatus.status === 'error' ? '#ef4444' : '#d1d5db';
-
+  const isRunning = botStatus.status==='running';
+  const dotColor = isRunning?'#22c55e':botStatus.status==='error'?'#ef4444':'#d1d5db';
   const levelColor = lvl => lvl==='success'?'#16a34a':lvl==='error'?'#ef4444':lvl==='warn'?'#d97706':'#A8A39D';
 
-  return (
+  return(
     <div style={{flex:1,overflowY:'auto',padding:28,display:'flex',flexDirection:'column',gap:20}}>
+
+      {/* Header mit Zurück-Button */}
+      <div style={{display:'flex',alignItems:'center',gap:12}}>
+        <button className="btn btn-ghost btn-sm" onClick={onBack} style={{flexShrink:0}}>← Zurück</button>
+        <div style={{flex:1,fontSize:15,fontWeight:700,color:'#141210'}}>Session konfigurieren</div>
+        <div style={{fontSize:12,color:'#A8A39D'}}>Tages-Limit: {botStatus.sentToday||0}/{botStatus.dailyMax||15}</div>
+      </div>
 
       {/* Status-Bar */}
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px',display:'flex',alignItems:'center',gap:16}}>
         <div style={{width:12,height:12,borderRadius:'50%',background:dotColor,flexShrink:0,boxShadow:isRunning?'0 0 0 4px rgba(34,197,94,.2)':'none',transition:'all .3s'}}/>
         <div style={{flex:1}}>
-          <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>
-            {isRunning?`Läuft — ${botStatus.sentToday} heute gesendet`:botStatus.status==='error'?'Fehler':' Gestoppt'}
-          </div>
-          <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>
-            {isRunning?'LinkedIn-Outreach aktiv':botStatus.lastError||`Gesamt: ${botStatus.totalSent||0} gesendet`}
-          </div>
+          <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>{isRunning?`Läuft — ${botStatus.sentToday} heute gesendet`:botStatus.status==='error'?'Fehler':'Gestoppt'}</div>
+          <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>{isRunning?'LinkedIn-Outreach aktiv':botStatus.lastError||`Gesamt: ${botStatus.totalSent||0} gesendet`}</div>
         </div>
-        <button onClick={isRunning?handleStop:handleStart} disabled={actionBusy||(!serverHasCookies&&!cookiesValid)}
-          className={'btn btn-sm '+(isRunning?'btn-danger':'btn-primary')}>
+        <button onClick={isRunning?handleStop:handleStart} disabled={actionBusy||(!serverHasCookies&&!cookiesValid)} className={'btn btn-sm '+(isRunning?'btn-danger':'btn-primary')}>
           {actionBusy?'…':isRunning?'Stop':'Start'}
         </button>
       </div>
@@ -6750,13 +6831,16 @@ function LinkedInOutreachBot(){
         <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:14}}>Konfiguration</div>
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           <div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Session-Name</label>
+            <input value={name} onChange={e=>setName(e.target.value)} placeholder="z.B. HVAC USA, Plumbers Wien …"/>
+          </div>
+          <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe (Suchbegriff)</label>
             <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner USA"/>
           </div>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Anfragen pro Session</label>
-            <input type="number" value={config.tagLimit} min={1} max={50} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||20}))} style={{maxWidth:100}}/>
-            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfehlung: max. 20–25 um Account-Sperren zu vermeiden</div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Anfragen pro Session (Hard-Limit: 15/Tag gesamt)</label>
+            <input type="number" value={config.tagLimit} min={1} max={15} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||15}))} style={{maxWidth:100}}/>
           </div>
           <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Connection-Nachricht (max. 300 Zeichen)</label>
@@ -6764,59 +6848,29 @@ function LinkedInOutreachBot(){
             <div style={{fontSize:11,color:config.message.length>280?'#ef4444':'#C0BBB5',marginTop:4,textAlign:'right'}}>{config.message.length}/300</div>
           </div>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
-              Anthropic API-Key {serverHasKey&&<span style={{color:'#22c55e',fontWeight:400}}>✓ gespeichert</span>}
-            </label>
-            <input type="password" value={config.anthropicKey} onChange={e=>setConfig(c=>({...c,anthropicKey:e.target.value}))}
-              placeholder={serverHasKey?'(aktuell gespeichert — neu eingeben zum Ändern)':'sk-ant-api03-...'}/>
-            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Für Haiku-Personalisierung (optional — ohne Key wird der Standard-Text verwendet)</div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Anthropic API-Key {serverHasKey&&<span style={{color:'#22c55e',fontWeight:400}}>✓ gespeichert</span>}</label>
+            <input type="password" value={config.anthropicKey} onChange={e=>setConfig(c=>({...c,anthropicKey:e.target.value}))} placeholder={serverHasKey?'(gespeichert — neu eingeben zum Ändern)':'sk-ant-api03-...'}/>
+            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Optional — für Haiku-Personalisierung</div>
           </div>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
-              Residential Proxy {serverHasProxy&&<span style={{color:'#22c55e',fontWeight:400}}>✓ aktiv</span>}
-            </label>
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              <input type="password" value={config.proxy} onChange={e=>setConfig(c=>({...c,proxy:e.target.value}))}
-                placeholder={serverHasProxy?'(gespeichert — neu eingeben zum Ändern)':'http://user:pass@proxy.smartproxy.net:3120'}
-                style={{flex:1}}/>
-              <button className="btn btn-primary btn-sm" style={{flexShrink:0,whiteSpace:'nowrap'}}
-                disabled={saving||!config.proxy.trim()}
-                onClick={async()=>{
-                  setSaving(true); setSaveMsg(''); setErr('');
-                  try{
-                    const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify({proxy:config.proxy})});
-                    const ct = r.headers.get('content-type')||'';
-                    if(!ct.includes('json')) throw new Error('Server noch nicht bereit — Seite neu laden und nochmal versuchen.');
-                    const d = await r.json();
-                    if(d.error) throw new Error(d.error);
-                    setServerHasProxy(!!d.hasProxy);
-                    setSaveMsg('✓ Proxy gespeichert');
-                    setTimeout(()=>setSaveMsg(''),2500);
-                    setConfig(c=>({...c,proxy:''}));
-                  }catch(e){ setErr(e.message); }
-                  setSaving(false);
-                }}>Proxy speichern</button>
-            </div>
-            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfohlen: Smartproxy Residential — schützt deinen LinkedIn-Account vor Sperren</div>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Residential Proxy {serverHasProxy&&<span style={{color:'#22c55e',fontWeight:400}}>✓ aktiv</span>}</label>
+            <input type="password" value={config.proxy} onChange={e=>setConfig(c=>({...c,proxy:e.target.value}))} placeholder={serverHasProxy?'(gespeichert — neu eingeben zum Ändern)':'http://user:pass@proxy.smartproxy.net:3120'}/>
+            <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Pflicht — ohne Proxy startet der Bot nicht</div>
           </div>
         </div>
       </div>
 
-      {/* LinkedIn Session */}
+      {/* LinkedIn Session (Cookies) */}
       <div style={{background:'white',borderRadius:14,border:`1px solid ${(cookiesValid||serverHasCookies)?'rgba(34,197,94,.3)':'rgba(0,0,0,.08)'}`,padding:'18px 22px'}}>
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
-          <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>LinkedIn Session</div>
-          {serverHasCookies&&<span style={{fontSize:11,fontWeight:600,color:'#22c55e',background:'rgba(34,197,94,.1)',borderRadius:99,padding:'2px 8px'}}>✓ Cookies am Server</span>}
+          <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>LinkedIn Session (Cookies)</div>
+          {serverHasCookies&&<span style={{fontSize:11,fontWeight:600,color:'#22c55e',background:'rgba(34,197,94,.1)',borderRadius:99,padding:'2px 8px'}}>✓ gespeichert</span>}
         </div>
-        <div style={{fontSize:12,color:'#A8A39D',marginBottom:12,lineHeight:1.6}}>
-          Gehe auf <strong>linkedin.com</strong> → öffne <strong>Cookie-Editor</strong> → klicke <strong>Export as JSON</strong> → füge das JSON hier ein.
-        </div>
+        <div style={{fontSize:12,color:'#A8A39D',marginBottom:12,lineHeight:1.6}}>linkedin.com → Cookie-Editor → Export as JSON → hier einfügen</div>
         <textarea value={config.cookies} onChange={e=>setConfig(c=>({...c,cookies:e.target.value}))}
           placeholder='[{"name":"li_at","value":"...","domain":".linkedin.com",...}]'
-          style={{minHeight:90,fontFamily:'monospace',fontSize:11,resize:'vertical',color:cookiesValid?'#16a34a':'inherit'}}/>
-        {config.cookies.trim()&&!cookiesValid&&(
-          <div style={{fontSize:11,color:'#ef4444',marginTop:4}}>⚠ Ungültiges JSON — bitte nochmal exportieren</div>
-        )}
+          style={{minHeight:80,fontFamily:'monospace',fontSize:11,resize:'vertical',color:cookiesValid?'#16a34a':'inherit'}}/>
+        {config.cookies.trim()&&!cookiesValid&&<div style={{fontSize:11,color:'#ef4444',marginTop:4}}>⚠ Ungültiges JSON</div>}
       </div>
 
       {/* Speichern */}
@@ -6829,12 +6883,11 @@ function LinkedInOutreachBot(){
       <div style={{background:'white',borderRadius:14,border:'1px solid rgba(0,0,0,.08)',padding:'18px 22px'}}>
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
           <div style={{fontSize:11,fontWeight:600,color:'#A8A39D',textTransform:'uppercase',letterSpacing:'.06em',flex:1}}>Aktivitäts-Log</div>
-          {isRunning&&<div style={{fontSize:11,color:'#22c55e',fontWeight:600,animation:'pulse 1.5s infinite'}}>● Live</div>}
+          {isRunning&&<div style={{fontSize:11,color:'#22c55e',fontWeight:600}}>● Live</div>}
           {log.length>0&&<button className="btn btn-ghost btn-sm" onClick={fetchLog}>Aktualisieren</button>}
         </div>
         {log.length===0?(
           <div style={{textAlign:'center',padding:'40px 20px',color:'#C8C3BD'}}>
-            <div style={{fontSize:32,marginBottom:10,opacity:.4}}>📋</div>
             <div style={{fontSize:13,fontWeight:500}}>Noch keine Aktivität</div>
             <div style={{fontSize:12,marginTop:4}}>Gesendete Connection Requests erscheinen hier</div>
           </div>
@@ -6842,7 +6895,7 @@ function LinkedInOutreachBot(){
           <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:400,overflowY:'auto'}}>
             {log.map((entry,i)=>(
               <div key={i} style={{display:'flex',gap:10,padding:'7px 10px',background:'#F8F7F5',borderRadius:8,fontSize:12,alignItems:'flex-start'}}>
-                <span style={{color:'#C0BBB5',flexShrink:0,fontFamily:'monospace',fontSize:11}}>{entry.ts ? entry.ts.slice(11,19) : ''}</span>
+                <span style={{color:'#C0BBB5',flexShrink:0,fontFamily:'monospace',fontSize:11}}>{entry.ts?entry.ts.slice(11,19):''}</span>
                 <span style={{color:levelColor(entry.level),flexShrink:0,fontWeight:600,width:48}}>{entry.level}</span>
                 <span style={{color:'#3F3A35',flex:1,lineHeight:1.5}}>{entry.msg}{entry.company?` · ${entry.company}`:''}</span>
               </div>

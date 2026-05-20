@@ -1985,80 +1985,104 @@ async function initDbWithRetry() {
 //  LinkedIn Outreach Bot  (playwright-core + Claude Haiku)
 // ══════════════════════════════════════════════════════════════════
 
-let linkedinBot = null;
-let linkedinConfig = {
-  zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
-  tagLimit: 20,
-  message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
-  cookies: '',
-  anthropicKey: '',
-  proxy: '',
-};
-
-function getLinkedinBot() {
-  if (!linkedinBot) {
-    try {
-      linkedinBot = require('./linkedin-bot.js');
-    } catch (e) {
-      return null;
-    }
+// ── LinkedIn Multi-Session ─────────────────────────────────────────────────────
+let linkedinBotModule = null;
+function getLinkedinModule() {
+  if (!linkedinBotModule) {
+    try { linkedinBotModule = require('./linkedin-bot.js'); } catch { return null; }
   }
-  return linkedinBot;
+  return linkedinBotModule;
 }
 
-// GET /api/linkedin/status
-app.get('/api/linkedin/status', requireAuth, (req, res) => {
-  const bot = getLinkedinBot();
-  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
-  res.json(bot.getStatus());
+// sessions: Map<id, { id, name, config, bot }>
+const linkedinSessions = new Map();
+
+function sessionSafe(s) {
+  const { cookies, anthropicKey, proxy, ...cfg } = s.config;
+  return { id: s.id, name: s.name, config: cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy, status: s.bot.getStatus() };
+}
+
+// GET /api/linkedin/sessions
+app.get('/api/linkedin/sessions', requireAuth, (req, res) => {
+  res.json([...linkedinSessions.values()].map(sessionSafe));
 });
 
-// GET /api/linkedin/log
-app.get('/api/linkedin/log', requireAuth, (req, res) => {
-  const bot = getLinkedinBot();
-  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+// POST /api/linkedin/sessions — neue Session anlegen
+app.post('/api/linkedin/sessions', requireAuth, express.json(), (req, res) => {
+  const mod = getLinkedinModule();
+  if (!mod) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const name = String(req.body?.name || 'Neue Session').slice(0, 80);
+  const session = {
+    id, name,
+    config: { zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA', tagLimit: 15, message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?", cookies: '', anthropicKey: '', proxy: '' },
+    bot: mod.createBot(),
+  };
+  linkedinSessions.set(id, session);
+  res.json(sessionSafe(session));
+});
+
+// DELETE /api/linkedin/sessions/:id
+app.delete('/api/linkedin/sessions/:id', requireAuth, (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  if (s.bot.isRunning()) return res.status(400).json({ error: 'Session läuft noch — erst stoppen' });
+  linkedinSessions.delete(req.params.id);
+  res.json({ ok: true });
+});
+
+// GET /api/linkedin/sessions/:id/config
+app.get('/api/linkedin/sessions/:id/config', requireAuth, (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  const { cookies, anthropicKey, proxy, ...cfg } = s.config;
+  res.json({ ...cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
+});
+
+// PUT /api/linkedin/sessions/:id/config
+app.put('/api/linkedin/sessions/:id/config', requireAuth, express.json(), (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  const { name, zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = req.body || {};
+  if (name !== undefined) s.name = String(name).slice(0, 80);
+  if (zielgruppe !== undefined) s.config.zielgruppe = String(zielgruppe).slice(0, 500);
+  if (tagLimit !== undefined) s.config.tagLimit = Math.min(Math.max(parseInt(tagLimit)||10, 1), 15);
+  if (message !== undefined) s.config.message = String(message).slice(0, 300);
+  if (cookies !== undefined) s.config.cookies = String(cookies).slice(0, 50000);
+  if (anthropicKey !== undefined) s.config.anthropicKey = String(anthropicKey).slice(0, 200);
+  if (proxy !== undefined) s.config.proxy = String(proxy).slice(0, 500);
+  res.json(sessionSafe(s));
+});
+
+// GET /api/linkedin/sessions/:id/status
+app.get('/api/linkedin/sessions/:id/status', requireAuth, (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  res.json(s.bot.getStatus());
+});
+
+// GET /api/linkedin/sessions/:id/log
+app.get('/api/linkedin/sessions/:id/log', requireAuth, (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-  res.json({ log: bot.getLog().slice(0, limit) });
+  res.json({ log: s.bot.getLog().slice(0, limit) });
 });
 
-// GET /api/linkedin/config
-app.get('/api/linkedin/config', requireAuth, (req, res) => {
-  // Cookies + API-Key nie zurückgeben
-  const { cookies, anthropicKey, proxy, ...safe } = linkedinConfig;
-  res.json({ ...safe, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
+// POST /api/linkedin/sessions/:id/start
+app.post('/api/linkedin/sessions/:id/start', requireAuth, express.json(), async (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  if (!s.config.cookies) return res.status(400).json({ error: 'Keine Cookies gespeichert' });
+  try { res.json(await s.bot.start(s.config)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// PUT /api/linkedin/config
-app.put('/api/linkedin/config', requireAuth, express.json(), (req, res) => {
-  const { zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = req.body || {};
-  if (zielgruppe !== undefined) linkedinConfig.zielgruppe = String(zielgruppe).slice(0, 500);
-  if (tagLimit !== undefined) linkedinConfig.tagLimit = Math.min(Math.max(parseInt(tagLimit) || 10, 1), 100);
-  if (message !== undefined) linkedinConfig.message = String(message).slice(0, 300);
-  if (cookies !== undefined) linkedinConfig.cookies = String(cookies).slice(0, 50000);
-  if (anthropicKey !== undefined) linkedinConfig.anthropicKey = String(anthropicKey).slice(0, 200);
-  if (proxy !== undefined) linkedinConfig.proxy = String(proxy).slice(0, 500);
-  const { cookies: _c, anthropicKey: _k, proxy: _p, ...safe } = linkedinConfig;
-  res.json({ ok: true, ...safe, hasCookies: !!linkedinConfig.cookies, hasApiKey: !!linkedinConfig.anthropicKey, hasProxy: !!linkedinConfig.proxy });
-});
-
-// POST /api/linkedin/start
-app.post('/api/linkedin/start', requireAuth, express.json(), async (req, res) => {
-  const bot = getLinkedinBot();
-  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
-  if (!linkedinConfig.cookies) return res.status(400).json({ error: 'Keine Cookies gespeichert' });
-  try {
-    const result = await bot.start(linkedinConfig);
-    res.json(result);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// POST /api/linkedin/stop
-app.post('/api/linkedin/stop', requireAuth, (req, res) => {
-  const bot = getLinkedinBot();
-  if (!bot) return res.status(503).json({ error: 'linkedin-bot.js nicht gefunden' });
-  res.json(bot.stop());
+// POST /api/linkedin/sessions/:id/stop
+app.post('/api/linkedin/sessions/:id/stop', requireAuth, (req, res) => {
+  const s = linkedinSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
+  res.json(s.bot.stop());
 });
 
 // stops responding, but a single unhandled error mid-request shouldn't kill it).
