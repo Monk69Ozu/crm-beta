@@ -2036,7 +2036,7 @@ app.get('/api/linkedin/sessions/:id/config', requireAuth, (req, res) => {
   const s = linkedinSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
   const { cookies, anthropicKey, proxy, ...cfg } = s.config;
-  res.json({ ...cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
+  res.json({ name: s.name, ...cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
 });
 
 // PUT /api/linkedin/sessions/:id/config

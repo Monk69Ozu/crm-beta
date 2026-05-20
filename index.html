@@ -6747,6 +6747,7 @@ function LinkedInSessionDetail({ id, onBack, AUTH }){
     fetch(`/api/linkedin/sessions/${id}/config`,{headers:AUTH}).then(r=>r.json()).then(d=>{
       if(d.error) return;
       setConfig(c=>({...c,zielgruppe:d.zielgruppe||c.zielgruppe,tagLimit:d.tagLimit||c.tagLimit,message:d.message||c.message}));
+      if(d.name) setName(d.name);
       setServerHasCookies(!!d.hasCookies); setServerHasKey(!!d.hasApiKey); setServerHasProxy(!!d.hasProxy);
     }).catch(()=>{});
     fetchStatus(); fetchLog();
