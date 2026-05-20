@@ -6775,8 +6775,26 @@ function LinkedInOutreachBot(){
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
               Residential Proxy {serverHasProxy&&<span style={{color:'#22c55e',fontWeight:400}}>✓ aktiv</span>}
             </label>
-            <input type="password" value={config.proxy} onChange={e=>setConfig(c=>({...c,proxy:e.target.value}))}
-              placeholder={serverHasProxy?'(gespeichert — neu eingeben zum Ändern)':'http://user:pass@proxy.smartproxy.net:3120'}/>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <input type="password" value={config.proxy} onChange={e=>setConfig(c=>({...c,proxy:e.target.value}))}
+                placeholder={serverHasProxy?'(gespeichert — neu eingeben zum Ändern)':'http://user:pass@proxy.smartproxy.net:3120'}
+                style={{flex:1}}/>
+              <button className="btn btn-primary btn-sm" style={{flexShrink:0,whiteSpace:'nowrap'}}
+                disabled={saving||!config.proxy.trim()}
+                onClick={async()=>{
+                  setSaving(true); setSaveMsg(''); setErr('');
+                  try{
+                    const r = await fetch('/api/linkedin/config',{method:'PUT',headers:AUTH,body:JSON.stringify({proxy:config.proxy})});
+                    const d = await r.json();
+                    if(d.error) throw new Error(d.error);
+                    setServerHasProxy(!!d.hasProxy);
+                    setSaveMsg('✓ Proxy gespeichert');
+                    setTimeout(()=>setSaveMsg(''),2500);
+                    setConfig(c=>({...c,proxy:''}));
+                  }catch(e){ setErr(e.message); }
+                  setSaving(false);
+                }}>Proxy speichern</button>
+            </div>
             <div style={{fontSize:11,color:'#C0BBB5',marginTop:4}}>Empfohlen: Smartproxy Residential — schützt deinen LinkedIn-Account vor Sperren</div>
           </div>
         </div>
