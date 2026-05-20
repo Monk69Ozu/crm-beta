@@ -12,13 +12,8 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet"
   />
-  <!--
-    Server-Injection-Platzhalter.
-    server.js fuehrt beim Start `.replace('<script>', inject)` aus und schreibt
-    dadurch `window.WEBARS_SELF_HOSTED` + `window.WEBARS_API_TOKEN` GENAU hier
-    hinein (vor allen anderen Scripts). Dieses leere <script>-Tag-Paar
-    MUSS das erste Script-Tag in der Datei bleiben.
-  -->
+  <!-- Server injects WEBARS_SELF_HOSTED + WEBARS_API_TOKEN into the empty
+       SCRIPT tag below. It MUST be the first one in this file. -->
   <script></script>
 </head>
 <body>
