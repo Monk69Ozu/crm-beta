@@ -2024,8 +2024,18 @@ function getLinkedinModule() {
 const linkedinSessions = new Map();
 
 function sessionSafe(s) {
-  const { cookies, anthropicKey, proxy, ...cfg } = s.config;
-  return { id: s.id, name: s.name, config: cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy, status: s.bot.getStatus() };
+  const { cookies, anthropicKey, proxy, profileList, ...cfg } = s.config;
+  // profileList kann gross werden (1000+ Profile) — Frontend bekommt nur die
+  // Anzahl, nicht die ganze Liste. Bot bekommt sie im start() direkt aus s.config.
+  return {
+    id: s.id,
+    name: s.name,
+    config: { ...cfg, profileCount: (profileList || []).length },
+    hasCookies: !!cookies,
+    hasApiKey: !!anthropicKey,
+    hasProxy: !!proxy,
+    status: s.bot.getStatus(),
+  };
 }
 
 // GET /api/linkedin/sessions
@@ -2041,7 +2051,16 @@ app.post('/api/linkedin/sessions', requireAuth, express.json(), (req, res) => {
   const name = String(req.body?.name || 'Neue Session').slice(0, 80);
   const session = {
     id, name,
-    config: { zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA', tagLimit: 15, message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?", cookies: '', anthropicKey: '', proxy: '' },
+    config: {
+      mode: 'search',
+      profileList: [],
+      zielgruppe: 'HVAC Plumber Electrician Roofer Owner Founder USA',
+      tagLimit: 15,
+      message: "Hey, I'd love to design you a website and use it for my portfolio. You only pay if you're 100% happy with the result. Worth a shot?",
+      cookies: '',
+      anthropicKey: '',
+      proxy: '',
+    },
     bot: mod.createBot(id),
   };
   linkedinSessions.set(id, session);
@@ -2061,16 +2080,36 @@ app.delete('/api/linkedin/sessions/:id', requireAuth, (req, res) => {
 app.get('/api/linkedin/sessions/:id/config', requireAuth, (req, res) => {
   const s = linkedinSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
-  const { cookies, anthropicKey, proxy, ...cfg } = s.config;
-  res.json({ name: s.name, ...cfg, hasCookies: !!cookies, hasApiKey: !!anthropicKey, hasProxy: !!proxy });
+  const { cookies, anthropicKey, proxy, profileList, ...cfg } = s.config;
+  res.json({
+    name: s.name,
+    ...cfg,
+    profileCount: (profileList || []).length,
+    hasCookies: !!cookies,
+    hasApiKey: !!anthropicKey,
+    hasProxy: !!proxy,
+  });
 });
 
 // PUT /api/linkedin/sessions/:id/config
-app.put('/api/linkedin/sessions/:id/config', requireAuth, express.json(), (req, res) => {
+app.put('/api/linkedin/sessions/:id/config', requireAuth, express.json({ limit: '5mb' }), (req, res) => {
   const s = linkedinSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
-  const { name, zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = req.body || {};
+  const { name, mode, profileList, zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = req.body || {};
   if (name !== undefined) s.name = String(name).slice(0, 80);
+  if (mode !== undefined) s.config.mode = (mode === 'list') ? 'list' : 'search';
+  if (profileList !== undefined) {
+    if (!Array.isArray(profileList)) {
+      return res.status(400).json({ error: 'profileList muss ein Array sein' });
+    }
+    // Profile validieren + auf max. 5000 begrenzen
+    s.config.profileList = profileList.slice(0, 5000).map(p => ({
+      profileUrl: String(p.profileUrl || '').slice(0, 500),
+      name:       String(p.name       || '').slice(0, 200),
+      title:      String(p.title      || '').slice(0, 200),
+      company:    String(p.company    || '').slice(0, 200),
+    })).filter(p => p.profileUrl);
+  }
   if (zielgruppe !== undefined) s.config.zielgruppe = String(zielgruppe).slice(0, 500);
   if (tagLimit !== undefined) s.config.tagLimit = Math.min(Math.max(parseInt(tagLimit)||10, 1), 15);
   if (message !== undefined) s.config.message = String(message).slice(0, 300);
@@ -2100,6 +2139,12 @@ app.post('/api/linkedin/sessions/:id/start', requireAuth, express.json(), async 
   const s = linkedinSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Session nicht gefunden' });
   if (!s.config.cookies) return res.status(400).json({ error: 'Keine Cookies gespeichert' });
+  if (s.config.mode === 'list' && !(s.config.profileList || []).length) {
+    return res.status(400).json({ error: 'CSV-Listen-Modus aktiv, aber keine Profile geladen — bitte CSV hochladen' });
+  }
+  if (s.config.mode !== 'list' && !s.config.zielgruppe) {
+    return res.status(400).json({ error: 'Keyword-Such-Modus aktiv, aber keine Zielgruppe eingetragen' });
+  }
   try { res.json(await s.bot.start(s.config)); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });

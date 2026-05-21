@@ -70,14 +70,17 @@ function createBot(sessionId) {
     : path.join(__dirname, 'data', 'linkedin-stats.json');
 
   function loadStats() {
+    let raw = {};
     try {
-      if (fs.existsSync(statsFile)) {
-        const raw = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
-        const today = new Date().toISOString().slice(0, 10);
-        if (raw.date === today) return raw;
-      }
+      if (fs.existsSync(statsFile)) raw = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
     } catch {}
-    return { date: new Date().toISOString().slice(0, 10), sentToday: 0, totalSent: 0 };
+    const today = new Date().toISOString().slice(0, 10);
+    if (raw.date === today) {
+      return { date: today, sentToday: raw.sentToday || 0, totalSent: raw.totalSent || 0, listDone: raw.listDone || [] };
+    }
+    // Tageswechsel: sentToday zuruecksetzen, totalSent + listDone behalten
+    // (listDone = bereits angeschriebene Profil-URLs der CSV-Liste, persistent).
+    return { date: today, sentToday: 0, totalSent: raw.totalSent || 0, listDone: raw.listDone || [] };
   }
 
   function saveStats(stats) {
@@ -90,10 +93,15 @@ function createBot(sessionId) {
 
   function getSentToday() { return loadStats().sentToday; }
 
-  function incrementSentToday() {
+  // listUrl optional: markiert ein CSV-Listen-Profil als abgearbeitet.
+  function incrementSentToday(listUrl) {
     const stats = loadStats();
     stats.sentToday++;
     stats.totalSent = (stats.totalSent || 0) + 1;
+    if (listUrl) {
+      stats.listDone = stats.listDone || [];
+      if (!stats.listDone.includes(listUrl)) stats.listDone.push(listUrl);
+    }
     saveStats(stats);
     return stats;
   }
@@ -149,10 +157,14 @@ function createBot(sessionId) {
   }
 
   async function runBot(config) {
-    const { zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = config;
+    const { mode, profileList, zielgruppe, tagLimit, message, cookies, anthropicKey, proxy } = config;
+    const isListMode = mode === 'list';
 
     if (!proxy || !proxy.trim()) {
       throw new Error('Kein Proxy konfiguriert — bitte Residential Proxy eintragen (Konto-Schutz).');
+    }
+    if (isListMode && (!Array.isArray(profileList) || !profileList.length)) {
+      throw new Error('CSV-Listen-Modus aktiv, aber keine Profile in der Liste. Bitte CSV hochladen.');
     }
 
     const alreadyToday = getSentToday();
@@ -164,7 +176,7 @@ function createBot(sessionId) {
     state.status = 'running';
     state.startedAt = new Date().toISOString();
     state.stopRequested = false;
-    addLog('info', `Bot startet (${alreadyToday} heute bereits gesendet, noch ${remaining} erlaubt)`, { zielgruppe });
+    addLog('info', `Bot startet — Modus: ${isListMode ? 'CSV-Liste' : 'Keyword-Suche'} (${alreadyToday} heute bereits gesendet, noch ${remaining} erlaubt)`, isListMode ? {} : { zielgruppe });
 
     let browser;
     try {
@@ -203,48 +215,77 @@ function createBot(sessionId) {
       }
       addLog('info', 'LinkedIn eingeloggt ✓');
 
-      let searchPage = 1, sent = 0;
-      while (sent < remaining && !state.stopRequested) {
-        const url = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(zielgruppe)}&page=${searchPage}&network=%5B%22S%22%2C%22O%22%5D`;
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(2500 + Math.random() * 2000);
-        checkUrlForCheckpoint(page.url());
-        await humanScroll(page);
+      let sent = 0;
 
-        const cards = await page.$$('.entity-result__item, .search-results__result-item');
-        if (!cards.length) { addLog('info', `Seite ${searchPage}: keine Ergebnisse mehr`); break; }
-        addLog('info', `Seite ${searchPage}: ${cards.length} Profile`);
-
-        for (const card of cards) {
-          if (state.stopRequested || sent >= remaining) break;
-          let profile = { name:'', title:'', company:'', profileUrl:'' };
-          try {
-            profile.name = (await card.$eval('.entity-result__title-text', el=>el.innerText.trim()).catch(()=>'')).split('\n')[0].trim();
-            profile.title = await card.$eval('.entity-result__primary-subtitle', el=>el.innerText.trim()).catch(()=>'');
-            profile.company = await card.$eval('.entity-result__secondary-subtitle', el=>el.innerText.trim()).catch(()=>'');
-            profile.profileUrl = await card.$eval('a.app-aware-link', el=>el.href).catch(()=>'');
-          } catch {}
-          if (!profile.profileUrl) continue;
-          const hasConnect = await card.$eval('button[aria-label*="Vernetzen"], button[aria-label*="Connect"]', ()=>true).catch(()=>false);
-          if (!hasConnect) { addLog('debug', `Übersprungen: ${profile.name}`); continue; }
-
-          const msg = await personalizeMessage(profile, message, anthropicKey, addLog);
-          const result = await sendConnectionRequest(page, profile, msg);
-          if (result.success) {
-            sent++;
-            const stats = incrementSentToday();
-            state.sentToday = stats.sentToday;
-            state.totalSent = stats.totalSent;
-            addLog('success', `Anfrage gesendet: ${profile.name}`, { title: profile.title, company: profile.company });
-          } else {
-            addLog('warn', `Fehlgeschlagen: ${profile.name} — ${result.reason}`);
-          }
-          const pause = 20000 + Math.random() * 30000;
-          addLog('debug', `Pause ${Math.round(pause/1000)}s...`);
-          await new Promise(r => setTimeout(r, pause));
+      // Ein Profil verarbeiten — gemeinsam fuer beide Modi.
+      // listUrl != null → CSV-Listen-Modus, markiert das Profil als erledigt.
+      const processProfile = async (profile, listUrl) => {
+        const msg = await personalizeMessage(profile, message, anthropicKey, addLog);
+        const result = await sendConnectionRequest(page, profile, msg);
+        if (result.success) {
+          sent++;
+          const stats = incrementSentToday(listUrl);
+          state.sentToday = stats.sentToday;
+          state.totalSent = stats.totalSent;
+          addLog('success', `Anfrage gesendet: ${profile.name || profile.profileUrl}`, { title: profile.title, company: profile.company });
+        } else {
+          addLog('warn', `Fehlgeschlagen: ${profile.name || profile.profileUrl} — ${result.reason}`);
         }
-        searchPage++;
-        await page.waitForTimeout(4000 + Math.random() * 3000);
+        const pause = 20000 + Math.random() * 30000;
+        addLog('debug', `Pause ${Math.round(pause / 1000)}s...`);
+        await new Promise(r => setTimeout(r, pause));
+      };
+
+      if (isListMode) {
+        // ── CSV-Listen-Modus ──────────────────────────────────────────────
+        // listDone (persistent ueber Tage) sorgt dafuer, dass eine grosse
+        // Liste ueber mehrere Tage hinweg ohne Doppel-Anfragen abgearbeitet
+        // wird — das 15/Tag-Limit greift weiter.
+        const done = new Set(loadStats().listDone || []);
+        const queue = (profileList || []).filter(
+          p => p && p.profileUrl && !done.has(p.profileUrl),
+        );
+        addLog('info', `CSV-Liste: ${(profileList || []).length} Profile gesamt, ${done.size} bereits erledigt, ${queue.length} offen`);
+        if (!queue.length) addLog('info', 'Keine offenen Profile — Liste komplett abgearbeitet.');
+        for (const profile of queue) {
+          if (state.stopRequested || sent >= remaining) break;
+          if (!/linkedin\.com\/in\//i.test(profile.profileUrl || '')) {
+            addLog('warn', `Übersprungen (kein gültiger LinkedIn-Profil-Link): ${profile.name || profile.profileUrl}`);
+            continue;
+          }
+          await processProfile(profile, profile.profileUrl);
+        }
+      } else {
+        // ── Keyword-Such-Modus ────────────────────────────────────────────
+        let searchPage = 1;
+        while (sent < remaining && !state.stopRequested) {
+          const url = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(zielgruppe)}&page=${searchPage}&network=%5B%22S%22%2C%22O%22%5D`;
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.waitForTimeout(2500 + Math.random() * 2000);
+          checkUrlForCheckpoint(page.url());
+          await humanScroll(page);
+
+          const cards = await page.$$('.entity-result__item, .search-results__result-item');
+          if (!cards.length) { addLog('info', `Seite ${searchPage}: keine Ergebnisse mehr`); break; }
+          addLog('info', `Seite ${searchPage}: ${cards.length} Profile`);
+
+          for (const card of cards) {
+            if (state.stopRequested || sent >= remaining) break;
+            let profile = { name:'', title:'', company:'', profileUrl:'' };
+            try {
+              profile.name = (await card.$eval('.entity-result__title-text', el=>el.innerText.trim()).catch(()=>'')).split('\n')[0].trim();
+              profile.title = await card.$eval('.entity-result__primary-subtitle', el=>el.innerText.trim()).catch(()=>'');
+              profile.company = await card.$eval('.entity-result__secondary-subtitle', el=>el.innerText.trim()).catch(()=>'');
+              profile.profileUrl = await card.$eval('a.app-aware-link', el=>el.href).catch(()=>'');
+            } catch {}
+            if (!profile.profileUrl) continue;
+            const hasConnect = await card.$eval('button[aria-label*="Vernetzen"], button[aria-label*="Connect"]', ()=>true).catch(()=>false);
+            if (!hasConnect) { addLog('debug', `Übersprungen: ${profile.name}`); continue; }
+            await processProfile(profile, null);
+          }
+          searchPage++;
+          await page.waitForTimeout(4000 + Math.random() * 3000);
+        }
       }
 
       addLog('info', `Fertig. ${sent} Anfragen gesendet (${getSentToday()}/${HARD_DAILY_MAX} heute gesamt).`);

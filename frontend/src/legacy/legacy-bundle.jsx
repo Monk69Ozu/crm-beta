@@ -6674,15 +6674,94 @@ function LinkedInSessionOverview({ onOpen, AUTH }){
 }
 
 // ── Detail-View: eine Session konfigurieren + starten ─────────────────────────
+// ── CSV-Parser fuer LinkedIn-Profil-Listen (PhantomBuster-kompatibel) ────
+// Erkennt die LinkedIn-URL-Spalte automatisch — egal wie sie heisst, egal
+// ob Komma- oder Semikolon-getrennt, mit oder ohne Anfuehrungszeichen.
+function parseLinkedinCsv(text) {
+  if (!text || !text.trim()) return { profiles: [], error: 'Leere Datei' };
+  // Trennzeichen heuristisch erkennen aus den ersten Zeilen
+  const sample = text.split(/\r?\n/).slice(0, 5).join('\n');
+  const cCommas = (sample.match(/,/g) || []).length;
+  const cSemis = (sample.match(/;/g) || []).length;
+  const cTabs = (sample.match(/\t/g) || []).length;
+  const sep = cTabs > cCommas && cTabs > cSemis ? '\t' : (cSemis > cCommas ? ';' : ',');
+
+  // RFC-4180-style CSV-Parser (handhabt quoted fields mit Trennzeichen + Newlines drin)
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], next = text[i + 1];
+    if (inQuotes) {
+      if (c === '"' && next === '"') { field += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === sep) { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && next === '\n') i++;
+        if (row.length || field) { row.push(field); rows.push(row); row = []; field = ''; }
+      } else field += c;
+    }
+  }
+  if (row.length || field) { row.push(field); rows.push(row); }
+  if (rows.length < 2) return { profiles: [], error: 'CSV hat keine Datenzeilen' };
+
+  const headers = rows[0].map(h => (h || '').trim().toLowerCase());
+  const dataRows = rows.slice(1);
+
+  // Spalten-Identifikation: Header-Namen zuerst, Inhalts-Erkennung als Fallback
+  let urlIdx = -1, nameIdx = -1, firstIdx = -1, lastIdx = -1, companyIdx = -1, titleIdx = -1;
+  headers.forEach((h, i) => {
+    if (urlIdx < 0 && /(profile.?url|linkedin.?(profile)?.?url|linkedin)/i.test(h)) urlIdx = i;
+    if (nameIdx < 0 && /^(full.?name|name|display.?name)$/i.test(h)) nameIdx = i;
+    if (firstIdx < 0 && /first.?name|vorname/i.test(h)) firstIdx = i;
+    if (lastIdx < 0 && /last.?name|nachname/i.test(h)) lastIdx = i;
+    if (companyIdx < 0 && /company|organization|firma|employer/i.test(h)) companyIdx = i;
+    if (titleIdx < 0 && /title|job|headline|position/i.test(h)) titleIdx = i;
+  });
+  // Fallback: Inhalts-Scan — welche Spalte enthält linkedin.com/in/-URLs?
+  if (urlIdx < 0) {
+    for (let col = 0; col < headers.length; col++) {
+      const hits = dataRows.slice(0, 20).filter(r => /linkedin\.com\/in\//i.test((r[col] || ''))).length;
+      if (hits > 0) { urlIdx = col; break; }
+    }
+  }
+  if (urlIdx < 0) return { profiles: [], error: 'Keine Spalte mit LinkedIn-Profil-Links gefunden' };
+
+  const profiles = [];
+  for (const r of dataRows) {
+    const url = (r[urlIdx] || '').trim();
+    if (!/linkedin\.com\/in\//i.test(url)) continue;
+    let name = '';
+    if (nameIdx >= 0) name = (r[nameIdx] || '').trim();
+    else if (firstIdx >= 0 || lastIdx >= 0) {
+      name = `${(r[firstIdx] || '').trim()} ${(r[lastIdx] || '').trim()}`.trim();
+    }
+    profiles.push({
+      profileUrl: url,
+      name,
+      title:   titleIdx   >= 0 ? (r[titleIdx]   || '').trim() : '',
+      company: companyIdx >= 0 ? (r[companyIdx] || '').trim() : '',
+    });
+  }
+  if (!profiles.length) return { profiles: [], error: 'Keine gültigen LinkedIn-Profil-Links in der CSV gefunden' };
+  return { profiles, error: null, columns: { urlIdx, nameIdx, firstIdx, lastIdx, titleIdx, companyIdx }, headers };
+}
+
 function LinkedInSessionDetail({ id, onBack, AUTH }){
 
   const [name, setName] = React.useState('');
   const [botStatus, setBotStatus] = React.useState({status:'stopped',sentToday:0,totalSent:0,dailyMax:15,remainingToday:15});
   const [log, setLog] = React.useState([]);
-  const [config, setConfig] = React.useState({ zielgruppe:'', tagLimit:15, message:'', cookies:'', anthropicKey:'', proxy:'' });
+  const [config, setConfig] = React.useState({ mode:'search', zielgruppe:'', tagLimit:15, message:'', cookies:'', anthropicKey:'', proxy:'' });
   const [serverHasCookies, setServerHasCookies] = React.useState(false);
   const [serverHasKey, setServerHasKey] = React.useState(false);
   const [serverHasProxy, setServerHasProxy] = React.useState(false);
+  const [serverProfileCount, setServerProfileCount] = React.useState(0);
+  const [csvText, setCsvText] = React.useState('');
+  const [parsedProfiles, setParsedProfiles] = React.useState([]);
+  const [csvError, setCsvError] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState('');
   const [actionBusy, setActionBusy] = React.useState(false);
@@ -6693,9 +6772,15 @@ function LinkedInSessionDetail({ id, onBack, AUTH }){
   React.useEffect(()=>{
     fetch(`/api/linkedin/sessions/${id}/config`,{headers:AUTH}).then(r=>r.json()).then(d=>{
       if(d.error) return;
-      setConfig(c=>({...c,zielgruppe:d.zielgruppe||c.zielgruppe,tagLimit:d.tagLimit||c.tagLimit,message:d.message||c.message}));
+      setConfig(c=>({...c,
+        mode: d.mode==='list'?'list':'search',
+        zielgruppe:d.zielgruppe||c.zielgruppe,
+        tagLimit:d.tagLimit||c.tagLimit,
+        message:d.message||c.message
+      }));
       if(d.name) setName(d.name);
       setServerHasCookies(!!d.hasCookies); setServerHasKey(!!d.hasApiKey); setServerHasProxy(!!d.hasProxy);
+      setServerProfileCount(d.profileCount||0);
     }).catch(()=>{});
     fetchStatus(); fetchLog();
   },[id]);
@@ -6712,20 +6797,47 @@ function LinkedInSessionDetail({ id, onBack, AUTH }){
   async function saveConfig(){
     setSaving(true); setSaveMsg(''); setErr('');
     try{
-      const body = {zielgruppe:config.zielgruppe,tagLimit:config.tagLimit,message:config.message};
+      const body = {mode:config.mode,zielgruppe:config.zielgruppe,tagLimit:config.tagLimit,message:config.message};
       if(name.trim()) body.name=name.trim();
       if(config.cookies.trim()) body.cookies=config.cookies;
       if(config.anthropicKey.trim()) body.anthropicKey=config.anthropicKey;
       if(config.proxy.trim()) body.proxy=config.proxy;
+      // profileList nur senden wenn eine neue CSV geparst wurde — sonst
+      // bleibt die Liste am Server erhalten.
+      if(parsedProfiles.length){ body.profileList = parsedProfiles; }
       const r = await fetch(`/api/linkedin/sessions/${id}/config`,{method:'PUT',headers:AUTH,body:JSON.stringify(body)});
       const ct=r.headers.get('content-type')||'';
       if(!ct.includes('json')) throw new Error('Server noch nicht bereit — Seite neu laden.');
       const d=await r.json(); if(d.error) throw new Error(d.error);
       setServerHasCookies(!!d.hasCookies); setServerHasKey(!!d.hasApiKey); setServerHasProxy(!!d.hasProxy);
+      setServerProfileCount((d.config&&d.config.profileCount)||0);
       setSaveMsg('✓ Gespeichert'); setTimeout(()=>setSaveMsg(''),2000);
       setConfig(c=>({...c,cookies:'',anthropicKey:'',proxy:''})); setName('');
+      setParsedProfiles([]); setCsvText(''); setCsvError('');
     }catch(e){ setErr(e.message); }
     setSaving(false);
+  }
+
+  function handleCsvUpload(file){
+    if(!file) return;
+    if(file.size > 5*1024*1024){ setCsvError('Datei zu gross (max. 5 MB)'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = String(e.target.result || '');
+      setCsvText(text.slice(0,2000)); // nur ein Snippet zur Anzeige
+      const res = parseLinkedinCsv(text);
+      if (res.error) { setCsvError(res.error); setParsedProfiles([]); }
+      else { setCsvError(''); setParsedProfiles(res.profiles); }
+    };
+    reader.onerror = () => setCsvError('Datei konnte nicht gelesen werden');
+    reader.readAsText(file);
+  }
+  function handleCsvPaste(text){
+    setCsvText(text);
+    if(!text.trim()){ setParsedProfiles([]); setCsvError(''); return; }
+    const res = parseLinkedinCsv(text);
+    if (res.error) { setCsvError(res.error); setParsedProfiles([]); }
+    else { setCsvError(''); setParsedProfiles(res.profiles); }
   }
 
   async function handleStart(){
@@ -6767,7 +6879,16 @@ function LinkedInSessionDetail({ id, onBack, AUTH }){
           <div style={{fontSize:14,fontWeight:700,color:'#141210'}}>{isRunning?`Läuft — ${botStatus.sentToday} heute gesendet`:botStatus.status==='error'?'Fehler':'Gestoppt'}</div>
           <div style={{fontSize:12,color:'#A8A39D',marginTop:2}}>{isRunning?'LinkedIn-Outreach aktiv':botStatus.lastError||`Gesamt: ${botStatus.totalSent||0} gesendet`}</div>
         </div>
-        <button onClick={isRunning?handleStop:handleStart} disabled={actionBusy||(!serverHasCookies&&!cookiesValid)} className={'btn btn-sm '+(isRunning?'btn-danger':'btn-primary')}>
+        <button
+          onClick={isRunning?handleStop:handleStart}
+          disabled={
+            actionBusy
+            || (!serverHasCookies && !cookiesValid)
+            || (config.mode==='list' && serverProfileCount===0 && parsedProfiles.length===0)
+            || (config.mode==='search' && !config.zielgruppe.trim())
+          }
+          className={'btn btn-sm '+(isRunning?'btn-danger':'btn-primary')}
+        >
           {actionBusy?'…':isRunning?'Stop':'Start'}
         </button>
       </div>
@@ -6783,9 +6904,49 @@ function LinkedInSessionDetail({ id, onBack, AUTH }){
             <input value={name} onChange={e=>setName(e.target.value)} placeholder="z.B. HVAC USA, Plumbers Wien …"/>
           </div>
           <div>
-            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe (Suchbegriff)</label>
-            <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner USA"/>
+            <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Quelle</label>
+            <div style={{display:'flex',gap:8}}>
+              <button type="button" onClick={()=>setConfig(c=>({...c,mode:'search'}))}
+                className={'btn btn-sm '+(config.mode==='search'?'btn-primary':'btn-ghost')}
+                style={{flex:1}}>🔍 Keyword-Suche</button>
+              <button type="button" onClick={()=>setConfig(c=>({...c,mode:'list'}))}
+                className={'btn btn-sm '+(config.mode==='list'?'btn-primary':'btn-ghost')}
+                style={{flex:1}}>📋 CSV-Liste (PhantomBuster)</button>
+            </div>
+            <div style={{fontSize:11,color:'#A8A39D',marginTop:5,lineHeight:1.5}}>
+              {config.mode==='search'
+                ? 'Bot sucht selbst auf LinkedIn nach dem Suchbegriff und schreibt die ersten Treffer an.'
+                : 'Du lädst eine CSV mit konkreten LinkedIn-Profilen hoch — der Bot arbeitet genau diese Liste ab (max. 15/Tag, persistent über mehrere Tage).'}
+            </div>
           </div>
+          {config.mode==='search' ? (
+            <div>
+              <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Zielgruppe (Suchbegriff)</label>
+              <input value={config.zielgruppe} onChange={e=>setConfig(c=>({...c,zielgruppe:e.target.value}))} placeholder="z.B. HVAC Owner USA"/>
+            </div>
+          ) : (
+            <div>
+              <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>
+                CSV-Datei mit LinkedIn-Profilen
+                {serverProfileCount>0 && parsedProfiles.length===0 &&
+                  <span style={{color:'#22c55e',fontWeight:400,marginLeft:8}}>✓ {serverProfileCount} Profile gespeichert</span>}
+                {parsedProfiles.length>0 &&
+                  <span style={{color:'#16a34a',fontWeight:600,marginLeft:8}}>+ {parsedProfiles.length} neue Profile erkannt — speichern um zu übernehmen</span>}
+              </label>
+              <input type="file" accept=".csv,text/csv,text/plain" onChange={e=>handleCsvUpload(e.target.files&&e.target.files[0])}
+                style={{padding:8,fontSize:12.5,background:'#F8F7F5',border:'1.5px dashed rgba(0,0,0,0.12)',borderRadius:9,width:'100%'}}/>
+              <details style={{marginTop:8}}>
+                <summary style={{fontSize:11.5,color:'#6B6560',cursor:'pointer'}}>Oder CSV-Inhalt direkt einfügen…</summary>
+                <textarea value={csvText} onChange={e=>handleCsvPaste(e.target.value)}
+                  placeholder='profileUrl,fullName,company,title&#10;https://www.linkedin.com/in/max-mustermann,Max Mustermann,Mustermann GmbH,CEO'
+                  style={{minHeight:80,fontFamily:'monospace',fontSize:11,marginTop:6,resize:'vertical'}}/>
+              </details>
+              {csvError && <div style={{fontSize:12,color:'#ef4444',marginTop:6}}>⚠ {csvError}</div>}
+              <div style={{fontSize:11,color:'#A8A39D',marginTop:6,lineHeight:1.5}}>
+                Erkennt automatisch die Spalte mit LinkedIn-Profil-Links (linkedin.com/in/…). Optional auch Spalten für Name, Firma, Titel (für die personalisierte Nachricht). PhantomBuster-CSV funktioniert direkt.
+              </div>
+            </div>
+          )}
           <div>
             <label style={{fontSize:12,fontWeight:600,color:'#6B6560',display:'block',marginBottom:5}}>Max. Anfragen pro Session (Hard-Limit: 15/Tag gesamt)</label>
             <input type="number" value={config.tagLimit} min={1} max={15} onChange={e=>setConfig(c=>({...c,tagLimit:parseInt(e.target.value)||15}))} style={{maxWidth:100}}/>
