@@ -637,7 +637,10 @@ app.post('/api/backups/:id/restore', requireAuth, async (req, res) => {
 // ── Brute-force protection for /api/auth-blob ────────────────────
 // Max 5 fetches per IP per 15 minutes. Purely server-side — no client cooperation needed.
 const AUTH_BLOB_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const AUTH_BLOB_MAX       = 5;
+// 30 statt 5: jeder Seiten-Load ruft /api/auth-blob (serverHasAuth). 5 war
+// beim normalen Arbeiten/Reloaden zu knapp. Brute-Force bleibt sinnlos —
+// wrapped_master ist PBKDF2-600k + AES-256-GCM, offline nicht knackbar.
+const AUTH_BLOB_MAX       = 30;
 const authBlobHits        = new Map(); // ip → { count, windowStart }
 
 setInterval(() => {

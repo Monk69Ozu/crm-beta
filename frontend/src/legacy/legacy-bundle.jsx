@@ -4562,7 +4562,12 @@ function QuotePreview({quote, settings, onClose, onMarkSent}){
       const r = await fetch('/api/quote-links', {method:'POST', headers:{Authorization:`Bearer ${window.WEBARS_API_TOKEN}`,'Content-Type':'application/json'}, body:JSON.stringify({quote})});
       const j = await r.json();
       if(!r.ok) throw new Error(j.error||r.status);
-      setLinkPopup({url:j.url, copied:false});
+      // Server baut die URL aus APP_URL — falls die env-var fehlt kommt nur
+      // ein relativer Pfad (/q/token). Dann mit aktuellem Origin praefixen.
+      let linkUrl = j.url || '';
+      if (linkUrl.startsWith('/')) linkUrl = window.location.origin + linkUrl;
+      else if (!/^https?:\/\//.test(linkUrl)) linkUrl = window.location.origin + '/q/' + j.token;
+      setLinkPopup({url:linkUrl, copied:false});
       if(quote.status==='entwurf') onMarkSent && onMarkSent();
     } catch(e) { alert('Fehler: '+e.message); }
     setLinkBusy(false);
@@ -5457,6 +5462,7 @@ function SnapshotRestoreModal({cryptoKey, onRestore, onClose}){
   const [err,setErr]=useState('');
   const fmt=t=>new Date(t).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
   const restore=async(snap)=>{
+    if(!window.confirm('Diesen Snapshot wirklich wiederherstellen?\n\nDer aktuelle Stand wird durch den Snapshot vom '+fmt(snap.t)+' ersetzt. Neuere Aenderungen gehen dabei verloren.'))return;
     setBusy(true);setErr('');
     try{
       const data=await aesDecrypt(cryptoKey,snap.d);
