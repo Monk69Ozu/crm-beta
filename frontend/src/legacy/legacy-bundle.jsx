@@ -9522,6 +9522,22 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
               {totalContacts>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.25)',fontWeight:500}}>{totalContacts}</span>}
             </button>
           );})()}
+
+          {/* ── Externe Tools (oeffnen in neuem Tab) ──────────────── */}
+          <div style={{fontSize:10,color:'rgba(255,255,255,.22)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.08em',padding:'14px 8px 8px'}}>Externe Tools</div>
+          {[
+            { emoji:'🤖', label:'Jarvis', url:'https://jarvis.webars.at' },
+            { emoji:'⚡', label:'n8n',    url:'https://n8n.webars.at'    },
+          ].map(t => (
+            <button key={t.label} onClick={()=>window.open(t.url, '_blank', 'noopener')}
+              style={{display:'flex',alignItems:'center',width:'100%',padding:'9px 10px',borderRadius:9,background:'transparent',border:'none',cursor:'pointer',gap:10,marginBottom:2,transition:'background .12s'}}
+              onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,.05)';}}
+              onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+              <span style={{fontSize:13,width:18,textAlign:'center',flexShrink:0,opacity:.55}}>{t.emoji}</span>
+              <span style={{flex:1,fontSize:13.5,fontWeight:400,color:'rgba(255,255,255,.55)',textAlign:'left',letterSpacing:'-0.01em'}}>{t.label}</span>
+              <span style={{fontSize:11,color:'rgba(255,255,255,.3)',fontWeight:500}}>↗</span>
+            </button>
+          ))}
         </nav>
         <div style={{padding:'12px 12px 16px',borderTop:'1px solid rgba(255,255,255,.06)',display:'grid',gap:2}}>
           {[
