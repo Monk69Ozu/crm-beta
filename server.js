@@ -211,6 +211,22 @@ async function initDb() {
         INDEX idx_campaign (campaign_slug)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    // ── ASSISTANT INBOX (Claude → CRM) ─────────────────────────────
+    // Claude POSTet hier Eintraege (Aufgaben/Notizen/Leads) als plaintext.
+    // Der CRM-Client pollt, verschluesselt sie in den state-Blob und loescht
+    // den Inbox-Eintrag. Gleiches Muster wie crm_lead_inbox.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS crm_inbox (
+        id              INT          NOT NULL AUTO_INCREMENT,
+        type            VARCHAR(32)  NOT NULL,
+        payload         LONGTEXT     NOT NULL,
+        source          VARCHAR(64)  DEFAULT NULL,
+        received_at     DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        claimed_at      DATETIME     DEFAULT NULL,
+        PRIMARY KEY (id),
+        INDEX idx_unclaimed (claimed_at, received_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
     // Webhook attempt log — every call (success + failure) for debugging.
     // Capped to last 500 entries (auto-pruned).
     await conn.query(`
@@ -1128,6 +1144,61 @@ app.delete('/api/leads/:id', requireAuth, async (req, res) => {
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
   try {
     await pool.query('DELETE FROM crm_lead_inbox WHERE id = ?', [id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ASSISTANT INBOX (Claude → CRM) ───────────────────────────────
+// POST: Claude legt einen Eintrag ab (Aufgabe/Notiz/Lead). Auth-geschuetzt.
+// GET:  CRM-Client pollt offene Eintraege. DELETE: nach Uebernahme loeschen.
+const INBOX_TYPES = ['task', 'note', 'lead'];
+
+app.post('/api/inbox', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const body = req.body || {};
+  const type = String(body.type || '').toLowerCase();
+  if (!INBOX_TYPES.includes(type)) {
+    return res.status(400).json({ error: `type muss eines sein: ${INBOX_TYPES.join(', ')}` });
+  }
+  // payload = alle Felder ausser type. Auf 32 KB begrenzt.
+  const { type: _t, source, ...payload } = body;
+  const payloadStr = JSON.stringify(payload);
+  if (payloadStr.length > 32 * 1024) return res.status(413).json({ error: 'payload zu gross (max 32 KB)' });
+  if (type === 'task' && !payload.text) return res.status(400).json({ error: 'task braucht ein text-Feld' });
+  if (type === 'note' && !payload.text && !payload.title) return res.status(400).json({ error: 'note braucht text oder title' });
+  if (type === 'lead' && !payload.name && !payload.firma) return res.status(400).json({ error: 'lead braucht name oder firma' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO crm_inbox (type, payload, source) VALUES (?, ?, ?)',
+      [type, payloadStr, String(source || 'claude').slice(0, 64)],
+    );
+    res.json({ ok: true, id: r.insertId, type });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/inbox — CRM-Client pollt offene Eintraege
+app.get('/api/inbox', requireAuth, async (_req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, type, payload, source, received_at FROM crm_inbox WHERE claimed_at IS NULL ORDER BY received_at ASC LIMIT 200',
+    );
+    const items = rows.map(r => {
+      let payload = {};
+      try { payload = JSON.parse(r.payload); } catch {}
+      return { id: r.id, type: r.type, source: r.source, receivedAt: r.received_at, ...payload };
+    });
+    res.json({ items });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/inbox/:id — nach Uebernahme in den verschluesselten Blob
+app.delete('/api/inbox/:id', requireAuth, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not ready' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+  try {
+    await pool.query('DELETE FROM crm_inbox WHERE id = ?', [id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

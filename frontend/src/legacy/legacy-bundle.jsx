@@ -9276,6 +9276,62 @@ function CRMApp({cryptoKey, initialData, onLock, onLogout}) {
     return()=>{window.removeEventListener('mousemove',bump);window.removeEventListener('keydown',bump);window.removeEventListener('click',bump);clearInterval(iv);};
   },[]);
 
+  // ── Assistant-Inbox-Polling (Claude → CRM) ──────────────────────
+  // Claude legt Aufgaben/Notizen/Leads per POST /api/inbox ab (plaintext).
+  // Hier holen wir sie, packen sie in den verschluesselten state (loest
+  // Auto-Save aus) und loeschen den Server-Eintrag. Laeuft global, egal
+  // welcher View offen ist.
+  const pollAssistantInbox = async () => {
+    const token = window.WEBARS_API_TOKEN;
+    if(!token) return;
+    let items = [];
+    try {
+      const r = await fetch('/api/inbox',{headers:{Authorization:'Bearer '+token}});
+      if(!r.ok) return;
+      const j = await r.json();
+      items = j.items || [];
+    } catch { return; }
+    if(!items.length) return;
+    const today = new Date().toISOString().slice(0,10);
+    const nowIso = new Date().toISOString();
+    const handledIds = [];
+    setState(s=>{
+      const ns = {...s};
+      let todos = ns.todos ? [...ns.todos] : [];
+      let leads = ns.leads ? [...ns.leads] : [];
+      let campaigns = ns.campaigns ? [...ns.campaigns] : [];
+      for(const it of items){
+        if(it.type==='task' && it.text){
+          todos.push({id:uid(),text:String(it.text).slice(0,500),description:String(it.description||'').slice(0,2000),done:false,priority:it.priority||'',dueDate:it.dueDate||'',createdAt:today});
+          handledIds.push(it.id);
+        } else if(it.type==='lead' && (it.firma||it.name)){
+          leads.push({id:uid(),firma:String(it.firma||it.name||'').slice(0,200),name:String(it.name||'').slice(0,200),email:String(it.email||'').slice(0,200),telefon:String(it.telefon||it.phone||'').slice(0,80),notizen:String(it.notizen||it.message||'').slice(0,2000),status:'new',receivedAt:nowIso,source:it.source||'claude'});
+          handledIds.push(it.id);
+        } else if(it.type==='note' && (it.text||it.title)){
+          // Notiz in eine feste Mappe "Von Claude" ablegen (anlegen falls fehlt).
+          let idx = campaigns.findIndex(c=>c.name==='Von Claude');
+          if(idx<0){ campaigns.push({id:uid(),name:'Von Claude',emoji:'🤖',color:'#4A7FA5',createdAt:nowIso,files:[]}); idx=campaigns.length-1; }
+          const file = {id:uid(),name:String(it.title||it.text).slice(0,60),content:String(it.text||'').slice(0,20000),createdAt:nowIso,updatedAt:nowIso};
+          campaigns[idx] = {...campaigns[idx], files:[...(campaigns[idx].files||[]), file]};
+          handledIds.push(it.id);
+        }
+      }
+      if(!handledIds.length) return s;
+      return {...ns, todos, leads, campaigns};
+    });
+    for(const id of handledIds){
+      fetch(`/api/inbox/${id}`,{method:'DELETE',headers:{Authorization:'Bearer '+token}}).catch(()=>{});
+    }
+  };
+  useEffect(()=>{
+    if(!SELF_HOSTED) return;
+    pollAssistantInbox();
+    const iv=setInterval(pollAssistantInbox,30000);
+    const onFocus=()=>pollAssistantInbox();
+    window.addEventListener('focus',onFocus);
+    return()=>{ clearInterval(iv); window.removeEventListener('focus',onFocus); };
+  },[cryptoKey]);
+
   // Auto-open Cloud-Sync modal once on first load if not connected
   useEffect(()=>{
     if(!hasGithubSettings()) setTimeout(()=>setModal('githubSync'), 600);
