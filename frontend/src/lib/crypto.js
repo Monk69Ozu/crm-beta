@@ -12,8 +12,18 @@
 //     vom Server beim Page-Load in den HTML-<script>-Platzhalter injiziert.
 
 // ── Base64-Helpers ────────────────────────────────────────────────────────
-export const toB64 = (buf) =>
-  btoa(String.fromCharCode(...new Uint8Array(buf)));
+// WICHTIG: String.fromCharCode(...array) sprengt bei grossen Buffern den
+// Call-Stack ("Maximum call stack size exceeded" ab ~100 KB). Daher in
+// 8-KB-Chunks verarbeiten — verschluesselte CRM-Blobs sind 150 KB+.
+export const toB64 = (buf) => {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+};
 
 export const fromB64 = (b64) =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));

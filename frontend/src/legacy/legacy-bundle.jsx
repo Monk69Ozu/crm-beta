@@ -75,7 +75,17 @@ function parseInviteToken(token) {
 }
 
 // ─── AES helpers ────────────────────────────────────────────────
-const toB64  = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+// toB64 in 8-KB-Chunks: String.fromCharCode(...array) sprengt bei grossen
+// Buffern den Call-Stack (verschluesselte CRM-Blobs sind 150 KB+).
+const toB64 = (buf) => {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+};
 const fromB64 = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 // UTF-8 safe base64 for strings (used by invite tokens and GitHub blobs)
 const b64encode = str => btoa(unescape(encodeURIComponent(str)));
